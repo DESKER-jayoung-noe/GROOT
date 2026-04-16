@@ -25,7 +25,7 @@ meRouter.get("/home", authMiddleware, async (req, res) => {
     take: 80,
   });
 
-  const recentItems = [];
+  const recentItems: Record<string, unknown>[] = [];
   for (const r of recents) {
     const k = r.targetType as EntityKind;
     if (!["material", "product", "set", "comparison"].includes(k)) continue;
@@ -39,7 +39,7 @@ meRouter.get("/home", authMiddleware, async (req, res) => {
     });
   }
 
-  const favItems = [];
+  const favItems: Record<string, unknown>[] = [];
   for (const f of favorites) {
     const k = f.targetType as EntityKind;
     if (!["material", "product", "set", "comparison"].includes(k)) continue;
