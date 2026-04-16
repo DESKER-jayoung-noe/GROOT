@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>자재 탭 — Figma 참고용 (groot)</title>
+  <!--
+    사용 방법
+    1) 이 파일을 브라우저로 연 뒤 (로컬 file:// 또는 dev 서버로 제공) 화면 캡처 → Figma에 붙여넣기
+    2) Figma 플러그인 "html.to.design" 등으로 URL/HTML 임포트 (플러그인마다 지원 형식이 다름)
+    3) 아래 CSS 변수·tokens.json과 동일 값으로 Figma 스타일/컬러 스타일 생성
+  -->
+  <style>
+    :root {
+      --bg-page: #f8f9fa;
+      --surface: #ffffff;
+      --border: #e0e0e0;
+      --border-soft: #f0f0f0;
+      --text: #111111;
+      --text-muted: #64748b;
+      --accent: #1e6fff;
+      --accent-soft: rgba(30, 111, 255, 0.1);
+      --emerald: #059669;
+      --radius-card: 16px;
+      --radius-input: 8px;
+      --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.05);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+      background: var(--bg-page);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    .page {
+      display: flex;
+      flex-direction: row;
+      max-width: 1440px;
+      min-height: 900px;
+      margin: 0 auto;
+    }
+    .main {
+      flex: 1;
+      min-width: 0;
+      padding: 24px 20px;
+      overflow: auto;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-card);
+      box-shadow: var(--shadow-card);
+      overflow: hidden;
+    }
+    .card-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      padding: 20px 20px 16px;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .title-input {
+      font-size: 18px;
+      font-weight: 700;
+      border: none;
+      outline: none;
+      width: 100%;
+      max-width: 360px;
+    }
+    .price-total {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--accent);
+    }
+    .card-body {
+      padding: 20px;
+    }
+    .row-section {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .h3 { font-size: 16px; font-weight: 700; margin: 0; }
+    .three-col {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    @media (min-width: 1280px) {
+      .three-col { flex-wrap: nowrap; align-items: stretch; }
+    }
+    .col {
+      min-width: 0;
+      flex: 1;
+      border-top: 1px solid var(--border-soft);
+      padding-top: 16px;
+    }
+    @media (min-width: 1280px) {
+      .col { border-top: none; padding-top: 0; border-left: 1px solid var(--border-soft); padding-left: 20px; }
+      .col:first-child { border-left: none; padding-left: 0; max-width: 22rem; }
+    }
+    .label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: block; }
+    .field {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-input);
+      font-size: 14px;
+      background: #fff;
+    }
+    .grid3 {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+    }
+    @media (min-width: 640px) {
+      .grid3 { grid-template-columns: repeat(3, 1fr); }
+    }
+    .footnote { font-size: 11px; color: var(--text-muted); margin-top: 12px; line-height: 1.5; }
+    .subhead { font-size: 14px; font-weight: 700; margin: 0 0 8px; }
+    .toggle-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+    .toggle {
+      display: inline-flex;
+      background: #f0f2f5;
+      padding: 4px;
+      border-radius: 8px;
+      gap: 4px;
+    }
+    .toggle button {
+      border: none;
+      background: #fff;
+      color: var(--accent);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: default;
+      box-shadow: 0 1px 2px rgba(0,0,0,.06);
+    }
+    .toggle button.off { background: transparent; color: #475569; box-shadow: none; }
+    .sheet-cards {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+      min-height: 200px;
+      max-height: 256px;
+    }
+    .sheet {
+      flex: 1;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 8px;
+      min-width: 0;
+    }
+    .sheet.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+    .diagram {
+      aspect-ratio: 1220 / 1820;
+      background: #f8f9fa;
+      border: 1px solid #e8ecf1;
+      border-radius: 6px;
+      margin-bottom: 8px;
+    }
+    .proc-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 8px;
+      font-size: 9px;
+    }
+    .proc-row {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+    }
+    .proc-row span.lbl { width: 40px; flex-shrink: 0; font-weight: 600; }
+    .proc-row span.unit { width: 12px; color: var(--text-muted); flex-shrink: 0; }
+    .proc-row .inp {
+      width: 48px;
+      flex-shrink: 0;
+      padding: 2px 4px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      text-align: right;
+      font-size: 9px;
+    }
+    .proc-row .won { flex: 1; min-width: 0; text-align: right; font-weight: 600; font-size: 8px; }
+    .aside {
+      width: 300px;
+      flex-shrink: 0;
+      background: #fff;
+      border-left: 1px solid var(--border);
+      padding: 16px;
+    }
+    .aside h2 { font-size: 16px; font-weight: 700; margin: 0 0 12px; }
+    .search {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--bg-page);
+      font-size: 14px;
+    }
+    .list-item {
+      margin-top: 12px;
+      padding: 16px;
+      border: 2px solid var(--border);
+      border-radius: 12px;
+    }
+    .list-item strong { display: block; font-size: 14px; }
+    .list-item .won { color: var(--accent); font-weight: 700; margin-top: 4px; }
+    .badge {
+      display: inline-block;
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 500;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="main">
+      <div class="card">
+        <div class="card-head">
+          <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;">
+            <span class="title-input">자재 이름</span>
+            <span class="badge">임시저장</span>
+          </div>
+          <div>
+            <span style="font-size:14px;color:var(--text-muted)">예상 : </span>
+            <span class="price-total">12,345,678원</span>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="row-section">
+            <h3 class="h3">원자재</h3>
+            <span style="font-weight:700">1,234,567원</span>
+          </div>
+
+          <div class="three-col">
+            <div class="col" style="border-left:none;padding-left:0;">
+              <div style="display:flex;gap:12px;margin-bottom:12px;">
+                <div style="flex:1;"><span class="label">W(mm)</span><div class="field">1200</div></div>
+                <div style="flex:1;"><span class="label">D(mm)</span><div class="field">600</div></div>
+                <div style="flex:1;"><span class="label">H(mm)</span><div class="field">18</div></div>
+              </div>
+              <div class="grid3">
+                <div><span class="label">색상</span><div class="field">WW</div></div>
+                <div><span class="label">소재</span><div class="field">PB</div></div>
+                <div><span class="label">표면재</span><div class="field">LPM</div></div>
+              </div>
+              <p class="footnote">색상, 소재, 표면재는 WW/PB/LPM 기본이며, 이 외 자재는 업데이트 예정입니다.</p>
+            </div>
+
+            <div class="col">
+              <p class="subhead">원장비교</p>
+              <div class="toggle-row">
+                <span style="font-size:12px;font-weight:600;color:#475569;">배치모드</span>
+                <div class="toggle">
+                  <button type="button">기본</button>
+                  <button type="button" class="off">90°</button>
+                  <button type="button" class="off">혼합</button>
+                </div>
+              </div>
+              <div class="sheet-cards">
+                <div class="sheet"><div class="diagram"></div><div style="font-size:11px;font-weight:700;text-align:center;">4×6</div></div>
+                <div class="sheet"><div class="diagram"></div><div style="font-size:11px;font-weight:700;text-align:center;">4×8</div></div>
+                <div class="sheet sel"><div class="diagram"></div><div style="font-size:11px;font-weight:700;text-align:center;">6×8</div></div>
+              </div>
+            </div>
+
+            <div class="col" style="max-width:30rem;">
+              <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+                <h3 class="h3" style="font-size:14px;">가공비</h3>
+                <span style="font-weight:700;font-size:14px;">999,999원</span>
+              </div>
+              <span class="label">엣지</span>
+              <div class="field" style="margin-bottom:10px;padding:8px 10px;font-size:12px;">4면 1T</div>
+              <div class="proc-grid">
+                <div class="proc-row"><span class="lbl">재단</span><span class="unit">EA</span><span class="inp">5</span><span class="won">500원</span></div>
+                <div class="proc-row"><span class="lbl">엣지</span><span class="unit">m</span><span class="inp">3.6</span><span class="won">…원</span></div>
+                <div class="proc-row"><span class="lbl">포밍</span><span class="unit">m</span><span class="inp">0</span><span class="won">0원</span></div>
+                <div class="proc-row"><span class="lbl">루타</span><span class="unit">m</span><span class="inp">0</span><span class="won">0원</span></div>
+                <div class="proc-row" style="grid-column:1/-1;"><span class="lbl">조립</span><span class="unit">H</span><span class="inp">0</span><span class="won">0원</span></div>
+              </div>
+              <hr style="border:none;border-top:1px dashed #e8e8e8;margin:8px 0;" />
+              <div class="proc-grid">
+                <div class="proc-row"><span class="lbl">세척</span><span class="unit">㎡</span><span class="inp">0</span><span class="won">0원</span></div>
+                <div class="proc-row"><span class="lbl">보링</span><span class="unit">개</span><span class="inp">0</span><span class="won">0원</span></div>
+                <div class="proc-row"><span class="lbl">곡면</span><span class="unit">m</span><span class="inp">0</span><span class="won">0원</span></div>
+                <div class="proc-row"><span class="lbl">45°</span><span class="unit">m</span><span class="inp">0</span><span class="won">0원</span></div>
+                <div style="grid-column:1/-1;display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);">
+                  <span>핫멜트 (자동)</span><span style="color:var(--text);font-weight:600;">0원</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="aside">
+      <h2>목록</h2>
+      <input class="search" type="text" placeholder="검색" readonly />
+      <div class="list-item">
+        <strong>샘플 자재명</strong>
+        <div class="won">9,999,999원</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-top:8px;">1200×600×18 mm</div>
+      </div>
+    </aside>
+  </div>
+</body>
+</html>

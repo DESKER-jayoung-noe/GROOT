@@ -1,0 +1,119 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum MaterialStatus {
+  DRAFT
+  SAVED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  passwordHash String
+  role         Role     @default(USER)
+  createdAt    DateTime @default(now())
+
+  materials    Material[]
+  products     Product[]
+  savedSets    SavedSet[]
+  comparisons  Comparison[]
+  favorites    Favorite[]
+  recents      RecentView[]
+}
+
+model Material {
+  id        String         @id @default(cuid())
+  userId    String
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  status    MaterialStatus @default(DRAFT)
+  payload   String
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@index([userId, status])
+}
+
+model Product {
+  id        String         @id @default(cuid())
+  userId    String
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  status    MaterialStatus @default(DRAFT)
+  payload   String
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@index([userId, status])
+}
+
+model SavedSet {
+  id        String         @id @default(cuid())
+  userId    String
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  status    MaterialStatus @default(DRAFT)
+  payload   String
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@map("sets")
+  @@index([userId, status])
+}
+
+model Comparison {
+  id        String         @id @default(cuid())
+  userId    String
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  status    MaterialStatus @default(DRAFT)
+  payload   String
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@index([userId, status])
+}
+
+model Favorite {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  targetType String
+  targetId   String
+  createdAt  DateTime @default(now())
+
+  @@unique([userId, targetType, targetId])
+}
+
+model RecentView {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  targetType String
+  targetId   String
+  visitedAt  DateTime @default(now())
+
+  @@unique([userId, targetType, targetId])
+  @@index([userId, visitedAt])
+}
+
+/** 단일 행 설정 + 단가 버전 (알림용) */
+model AppSettings {
+  id              String @id @default("global")
+  pricingVersion  Int    @default(1)
+  sheetPricesJson String @default("{}")
+  edgePricesJson  String @default("{}")
+  processPricesJson String @default("{}")
+  updatedAt       DateTime @updatedAt
+}
