@@ -1,7 +1,89 @@
 @import "tailwindcss";
 
+@variant dark (@media (prefers-color-scheme: dark));
+
+/* ============================================================
+   TDS (Toss Design System) — single source of truth tokens
+   ============================================================ */
 :root {
-  --accent: #1e6fff;
+  /* ── Primary palette ── */
+  --blue:       #3182f6;   /* TDS Blue (primary) */
+  --accent:     #3182f6;   /* alias */
+  --blue-bg:    #ebf3fe;
+  --blue-light: #c9e0fd;
+  --green:      #0ac67a;
+  --green-bg:   #e8faf3;
+  --red:        #f04452;
+  --red-bg:     #fff2f3;
+  --orange:     #f59e0b;
+
+  /* ── Neutral surfaces ── */
+  --bg:       #f2f4f8;
+  --surface:  #ffffff;
+  --surface2: #f8f9fb;
+
+  /* ── Borders ── */
+  --border:  #e8ecf2;
+  --border2: #dde2ea;
+
+  /* ── Text ── */
+  --text1: #191f28;
+  --text2: #4e5968;
+  --text3: #8b95a1;
+
+  /* ── Radius ── */
+  --radius:    12px;
+  --radius-sm:  8px;
+  --radius-xs:  6px;
+
+  /* ── Shadows ── */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+
+  /* ── Legacy quote variables (kept for backwards compat) ── */
+  --quote-bg:         var(--bg);
+  --quote-card:       var(--surface);
+  --quote-card-muted: var(--surface2);
+  --quote-border:     var(--border);
+  --quote-fg:         var(--text1);
+  --quote-muted:      var(--text2);
+}
+
+/* ── Dark mode overrides ── */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --blue:      #4d9cf8;
+    --accent:    #4d9cf8;
+    --blue-bg:   rgba(49, 130, 246, 0.14);
+    --blue-light: rgba(49, 130, 246, 0.3);
+    --green:     #2dd88a;
+    --green-bg:  rgba(10, 198, 122, 0.14);
+    --red:       #f87171;
+    --red-bg:    rgba(240, 68, 82, 0.14);
+
+    --bg:       #0f1419;
+    --surface:  #151b22;
+    --surface2: #1c2430;
+    --border:   rgba(232, 234, 237, 0.14);
+    --border2:  rgba(232, 234, 237, 0.22);
+    --text1:    #e8eaed;
+    --text2:    #bdc1c6;
+    --text3:    #9aa0a6;
+  }
+}
+
+/* ============================================================
+   Base styles
+   ============================================================ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
@@ -19,6 +101,137 @@ body {
     "Noto Sans KR",
     "Malgun Gothic",
     sans-serif;
-  background: #f4f6f9;
-  color: #1a1a1a;
+  background: var(--bg);
+  color: var(--text1);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ============================================================
+   Shared animations
+   ============================================================ */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ============================================================
+   TDS Utility layer (Tailwind @layer compatible)
+   ============================================================ */
+@layer components {
+  /* Buttons */
+  .tds-btn-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 44px;
+    padding: 0 20px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: var(--blue);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+  .tds-btn-primary:hover  { opacity: 0.88; }
+  .tds-btn-primary:active { opacity: 0.76; }
+  .tds-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .tds-btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 44px;
+    padding: 0 20px;
+    border: 1px solid var(--border2);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text2);
+    font-size: 14px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .tds-btn-secondary:hover { border-color: var(--blue); color: var(--blue); }
+
+  .tds-btn-ghost {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 8px;
+    height: 36px;
+    border: none;
+    background: none;
+    color: var(--text3);
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+    border-radius: var(--radius-xs);
+    transition: background 0.15s, color 0.15s;
+  }
+  .tds-btn-ghost:hover { background: var(--surface2); color: var(--text1); }
+
+  /* Inputs */
+  .tds-input {
+    width: 100%;
+    height: 44px;
+    padding: 0 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text1);
+    font-size: 14px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .tds-input:focus { border-color: var(--blue); }
+  .tds-input::placeholder { color: var(--text3); }
+
+  /* Cards */
+  .tds-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+
+  .tds-card-sm {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+
+  /* Badge */
+  .tds-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 100px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .tds-badge-blue  { background: var(--blue-bg);  color: var(--blue); }
+  .tds-badge-green { background: var(--green-bg); color: var(--green); }
+  .tds-badge-red   { background: var(--red-bg);   color: var(--red); }
 }

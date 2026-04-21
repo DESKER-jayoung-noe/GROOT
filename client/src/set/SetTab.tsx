@@ -6,15 +6,18 @@ import {
   useEffect,
   useImperativeHandle,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { api, ApiError } from "../api";
+import { getSets } from "../offline/stores";
 import { useAuth } from "../auth";
 import { formatWonKorean } from "../util/format";
 
 export type SetTabHandle = {
   saveDraft: () => Promise<void>;
   save: () => Promise<void>;
+  loadFromVault: (id: string) => Promise<void>;
 };
 
 type SetComputed = {
@@ -41,7 +44,16 @@ function defaultForm(): FormState {
   };
 }
 
-export const SetTab = forwardRef<SetTabHandle, { active?: boolean }>(function SetTab({ active = true }, ref) {
+export const SetTab = forwardRef<
+  SetTabHandle,
+  {
+    active?: boolean;
+    quoteBindEntityId?: string | null;
+    onQuoteMeta?: (meta: { name: string; grandTotalWon: number }) => void;
+    onQuoteEntityRebind?: (entityId: string) => void;
+    stripRenameEpoch?: number;
+  }
+>(function SetTab({ active = true, quoteBindEntityId, onQuoteMeta, onQuoteEntityRebind, stripRenameEpoch = 0 }, ref) {
   const { token } = useAuth();
   const [form, setForm] = useState<FormState>(defaultForm);
   const [computed, setComputed] = useState<SetComputed | null>(null);
@@ -55,6 +67,8 @@ export const SetTab = forwardRef<SetTabHandle, { active?: boolean }>(function Se
   const [msg, setMsg] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [dragOver, setDragOver] = useState(false);
+  const onQuoteEntityRebindRef = useRef(onQuoteEntityRebind);
+  onQuoteEntityRebindRef.current = onQuoteEntityRebind;
 
   const saveBody = useMemo(() => ({ ...form }), [form]);
 
@@ -120,42 +134,100 @@ export const SetTab = forwardRef<SetTabHandle, { active?: boolean }>(function Se
     }));
   }, []);
 
+  const onSaveRef = useRef<(draft: boolean, silent?: boolean) => Promise<void>>(async () => {});
+
   const onSave = useCallback(
-    async (draft: boolean) => {
-      setMsg(null);
+    async (draft: boolean, silent?: boolean) => {
+      if (!silent) setMsg(null);
       if (!token) return;
       try {
-        if (draft) {
-          await api("/sets/draft", { method: "POST", body: JSON.stringify(saveBody), token });
-          setMsg("임시저장되었습니다.");
-          void refreshSavedSets();
-          return;
-        }
         if (editingId) {
           await api(`/sets/${editingId}`, { method: "PUT", body: JSON.stringify(saveBody), token });
-          setMsg("저장되었습니다.");
+          if (!silent) setMsg(draft ? "임시저장되었습니다." : "저장되었습니다.");
         } else {
-          await api("/sets/save", { method: "POST", body: JSON.stringify(saveBody), token });
-          setMsg("보관함에 저장되었습니다.");
+          const path = draft ? "/sets/draft" : "/sets/save";
+          const res = await api<{ id: string }>(path, {
+            method: "POST",
+            body: JSON.stringify(saveBody),
+            token,
+          });
+          setEditingId(res.id);
+          onQuoteEntityRebindRef.current?.(res.id);
+          if (!silent) setMsg(draft ? "임시저장되었습니다." : "보관함에 저장되었습니다.");
         }
         void refreshLibrary();
         void refreshSavedSets();
       } catch (e) {
-        setMsg(e instanceof ApiError ? e.message : "저장에 실패했습니다.");
+        if (!silent) setMsg(e instanceof ApiError ? e.message : "저장에 실패했습니다.");
       }
     },
     [token, saveBody, editingId, refreshLibrary, refreshSavedSets]
   );
 
-  useImperativeHandle(ref, () => ({ saveDraft: () => onSave(true), save: () => onSave(false) }), [onSave]);
+  onSaveRef.current = onSave;
 
-  async function loadSet(id: string) {
-    if (!token) return;
-    const row = await api<{ name: string; form: FormState; computed: SetComputed }>(`/sets/${id}`, { token });
-    setForm({ ...row.form, name: row.name });
-    setComputed(row.computed);
-    setEditingId(id);
-  }
+  const loadSet = useCallback(
+    async (id: string) => {
+      if (!token) return;
+      const row = await api<{ name: string; form: FormState; computed: SetComputed }>(`/sets/${id}`, { token });
+      setForm({ ...row.form, name: row.name });
+      setComputed(row.computed);
+      setEditingId(id);
+      onQuoteEntityRebindRef.current?.(id);
+    },
+    [token]
+  );
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      saveDraft: () => onSave(true),
+      save: () => onSave(false),
+      loadFromVault: (id: string) => loadSet(id),
+    }),
+    [onSave, loadSet]
+  );
+
+  useEffect(() => {
+    if (!active || !quoteBindEntityId || !token) return;
+    void loadSet(quoteBindEntityId);
+  }, [active, quoteBindEntityId, token, loadSet]);
+
+  useEffect(() => {
+    if (!stripRenameEpoch || !quoteBindEntityId || !active) return;
+    const s = getSets().find((x) => x.id === quoteBindEntityId);
+    if (!s) return;
+    setForm((f) => ({ ...f, name: s.name }));
+  }, [stripRenameEpoch, quoteBindEntityId, active]);
+
+  const quoteMode = Boolean(quoteBindEntityId);
+
+  useEffect(() => {
+    if (!quoteMode) return;
+    return () => {
+      void onSaveRef.current(true, true);
+    };
+  }, [quoteMode]);
+
+  const autoSaveKey = useMemo(() => JSON.stringify(saveBody) + String(editingId), [saveBody, editingId]);
+
+  useEffect(() => {
+    if (!active) return;
+    if (quoteBindEntityId && editingId !== quoteBindEntityId) return;
+    const tid = window.setTimeout(() => {
+      void onSave(true, true);
+    }, 1600);
+    return () => clearTimeout(tid);
+  }, [active, autoSaveKey, editingId, quoteBindEntityId, onSave]);
+
+  useEffect(() => {
+    if (!quoteBindEntityId || !active) return;
+    if (editingId !== quoteBindEntityId) return;
+    onQuoteMeta?.({
+      name: form.name?.trim() || "이름 없음",
+      grandTotalWon: computed?.grandTotalWon ?? 0,
+    });
+  }, [quoteBindEntityId, active, editingId, form.name, computed?.grandTotalWon, onQuoteMeta]);
 
   async function onCopySet(id: string) {
     if (!token) return;

@@ -3,8 +3,11 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider, useAuth } from "./auth";
 import { LoginPage } from "./pages/LoginPage";
 import { MainLayout } from "./layout/MainLayout";
-import { HomePage } from "./pages/HomePage";
+import { QuoteWorkspaceLayout } from "./layout/QuoteWorkspaceLayout";
 import { AddPage } from "./pages/AddPage";
+import { MaterialQuotePage } from "./pages/MaterialQuotePage";
+import { ProductQuotePage } from "./pages/ProductQuotePage";
+import { SetQuotePage } from "./pages/SetQuotePage";
 import { ComparePage } from "./pages/ComparePage";
 import { ArchivePage } from "./pages/ArchivePage";
 import { AdminDbPage } from "./pages/AdminDbPage";
@@ -28,14 +31,18 @@ export function App() {
             </Protected>
           }
         >
-          <Route index element={<Navigate to="/home" replace />} />
-          <Route path="home" element={<HomePage />} />
+          <Route index element={<Navigate to="/material" replace />} />
           <Route path="add" element={<AddPage />} />
-          <Route path="compare" element={<ComparePage />} />
+          <Route element={<QuoteWorkspaceLayout />}>
+            <Route path="material" element={<MaterialQuotePage />} />
+            <Route path="product" element={<ProductQuotePage />} />
+            <Route path="set" element={<SetQuotePage />} />
+            <Route path="compare" element={<ComparePage />} />
+          </Route>
           <Route path="archive" element={<ArchivePage />} />
           <Route path="admin/db" element={<AdminDbPage />} />
         </Route>
-        <Route path="*" element={<Navigate to="/home" replace />} />
+        <Route path="*" element={<Navigate to="/material" replace />} />
       </Routes>
     </AuthProvider>
   );

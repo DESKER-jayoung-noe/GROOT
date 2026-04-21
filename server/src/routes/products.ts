@@ -8,8 +8,14 @@ import { computeProduct, type ProductFormInput } from "../lib/productCalc.js";
 
 export const productsRouter = Router();
 
+const lineItemSchema = z.object({
+  materialId: z.string(),
+  qty: z.number().int().min(1).max(500),
+});
+
 const productBodySchema = z.object({
-  materialIds: z.array(z.string()),
+  lineItems: z.array(lineItemSchema).optional(),
+  materialIds: z.array(z.string()).optional(),
   hardwareEa: z.number().nonnegative().default(0),
   stickerEa: z.number().nonnegative().default(1),
   adminRate: z.number().min(0).max(1).default(0.05),
@@ -24,8 +30,13 @@ const previewSchema = productBodySchema.extend({
 });
 
 function toInput(body: z.infer<typeof productBodySchema>, name: string): ProductFormInput {
+  const lineItems =
+    body.lineItems && body.lineItems.length > 0
+      ? body.lineItems
+      : (body.materialIds ?? []).map((id) => ({ materialId: id, qty: 1 }));
   return {
     name,
+    lineItems,
     materialIds: body.materialIds,
     hardwareEa: body.hardwareEa,
     stickerEa: body.stickerEa,
@@ -111,10 +122,14 @@ productsRouter.get("/list", authMiddleware, async (req, res) => {
     let grandTotalWon = 0;
     let summary = "";
     try {
-      const p = JSON.parse(r.payload) as { computed?: { grandTotalWon: number }; form?: { materialIds?: string[] } };
+      const p = JSON.parse(r.payload) as {
+        computed?: { grandTotalWon: number };
+        form?: { lineItems?: { qty: number }[]; materialIds?: string[] };
+      };
       grandTotalWon = p.computed?.grandTotalWon ?? 0;
-      const n = p.form?.materialIds?.length ?? 0;
-      summary = `부품 ${n}종`;
+      const n =
+        p.form?.lineItems?.reduce((a, l) => a + (l.qty ?? 1), 0) ?? p.form?.materialIds?.length ?? 0;
+      summary = `부품 ${n}개`;
     } catch {
       /* ignore */
     }

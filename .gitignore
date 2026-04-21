@@ -1,7 +1,11 @@
 node_modules
 dist
+client/share/groot-latest.html
 .env.local
 server/dev.db
 server/dev.db-journal
 *.log
 server/data/uploads/
+
+# 로컬 견적/엑셀 원본 (저장소 미포함)
+excel/

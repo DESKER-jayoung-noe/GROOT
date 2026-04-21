@@ -13,7 +13,7 @@ export function LoginPage() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (token) nav("/home", { replace: true });
+    if (token) nav("/add", { replace: true });
   }, [token, nav]);
 
   async function submit() {
@@ -26,7 +26,7 @@ export function LoginPage() {
         body: JSON.stringify({ username, password }),
       });
       setAuth(res.token, res.user);
-      nav("/home", { replace: true });
+      nav("/add", { replace: true });
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : "오류가 발생했습니다.");
     } finally {
@@ -35,48 +35,115 @@ export function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-100 p-6">
-      <div className="w-full max-w-md rounded-2xl bg-white shadow-sm border border-slate-200 p-8">
-        <h1 className="text-2xl font-semibold text-slate-900 mb-1">목재 견적 계산기</h1>
-        <p className="text-sm text-slate-500 mb-6">아이디와 비밀번호로 {mode === "login" ? "로그인" : "회원가입"}</p>
-        <div className="space-y-4">
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "var(--bg)",
+        padding: "24px",
+        fontFamily: "'Pretendard Variable', Pretendard, -apple-system, sans-serif",
+      }}
+    >
+      <div
+        style={{
+          width: "100%",
+          maxWidth: "400px",
+          background: "var(--surface)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius)",
+          padding: "40px 36px",
+          boxShadow: "var(--shadow-md)",
+        }}
+      >
+        {/* Brand */}
+        <div style={{ marginBottom: "32px" }}>
+          <div style={{ fontSize: "22px", fontWeight: 700, color: "var(--text1)", marginBottom: "4px" }}>
+            목재 견적 <span style={{ color: "var(--blue)" }}>계산기</span>
+          </div>
+          <p style={{ fontSize: "14px", color: "var(--text3)", margin: 0 }}>
+            {mode === "login" ? "아이디와 비밀번호로 로그인" : "새 계정을 만드세요"}
+          </p>
+        </div>
+
+        {/* Fields */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">아이디</label>
+            <label
+              style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text2)", marginBottom: "6px" }}
+            >
+              아이디
+            </label>
             <input
-              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#1e6fff]/40"
+              className="tds-input"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void submit()}
               autoComplete="username"
+              placeholder="아이디 입력"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">비밀번호</label>
+            <label
+              style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text2)", marginBottom: "6px" }}
+            >
+              비밀번호
+            </label>
             <input
               type="password"
-              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#1e6fff]/40"
+              className="tds-input"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void submit()}
               autoComplete={mode === "login" ? "current-password" : "new-password"}
+              placeholder="비밀번호 입력"
             />
           </div>
-          {err && <p className="text-sm text-red-600">{err}</p>}
+
+          {err && (
+            <div
+              style={{
+                fontSize: "13px",
+                color: "var(--red)",
+                background: "var(--red-bg)",
+                border: "1px solid rgba(240,68,82,0.2)",
+                borderRadius: "var(--radius-xs)",
+                padding: "10px 14px",
+              }}
+            >
+              {err}
+            </div>
+          )}
+
           <button
             type="button"
+            className="tds-btn-primary"
+            style={{ width: "100%", marginTop: "4px" }}
             onClick={() => void submit()}
             disabled={loading}
-            className="w-full rounded-lg bg-[#1e6fff] text-white py-2.5 text-sm font-medium hover:bg-[#185dcc] disabled:opacity-60"
           >
             {loading ? "처리 중…" : mode === "login" ? "로그인" : "회원가입"}
           </button>
+
           <button
             type="button"
-            className="w-full text-sm text-[#1e6fff]"
-            onClick={() => {
-              setMode(mode === "login" ? "register" : "login");
-              setErr(null);
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              fontSize: "13px",
+              color: "var(--text3)",
+              padding: "4px",
+              fontFamily: "inherit",
+              textAlign: "center",
             }}
+            onClick={() => { setMode(mode === "login" ? "register" : "login"); setErr(null); }}
           >
-            {mode === "login" ? "계정이 없으신가요? 회원가입" : "이미 계정이 있으신가요? 로그인"}
+            {mode === "login" ? "계정이 없으신가요? " : "이미 계정이 있으신가요? "}
+            <span style={{ color: "var(--blue)", fontWeight: 600 }}>
+              {mode === "login" ? "회원가입" : "로그인"}
+            </span>
           </button>
         </div>
       </div>

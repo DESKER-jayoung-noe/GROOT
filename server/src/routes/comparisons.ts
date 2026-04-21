@@ -23,6 +23,10 @@ const saveSchema = bodySchema.extend({
   name: z.string().min(1).max(200),
 });
 
+const draftCreateSchema = saveSchema.extend({
+  id: z.string().min(1).optional(),
+});
+
 const putSchema = saveSchema.extend({
   finalize: z.boolean().optional(),
 });
@@ -46,7 +50,7 @@ comparisonsRouter.post("/preview", authMiddleware, async (req, res) => {
 
 comparisonsRouter.post("/draft", authMiddleware, async (req, res) => {
   const u = (req as typeof req & { user: { sub: string } }).user;
-  const parsed = saveSchema.safeParse(req.body);
+  const parsed = draftCreateSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "입력값을 확인해 주세요." });
     return;
@@ -61,6 +65,19 @@ comparisonsRouter.post("/draft", authMiddleware, async (req, res) => {
     highlights,
     _meta: { pricingVersion: settings.pricingVersion },
   });
+  if (parsed.data.id) {
+    const existing = await prisma.comparison.findFirst({
+      where: { id: parsed.data.id, userId: u.sub, status: MaterialStatus.DRAFT },
+    });
+    if (existing) {
+      const updated = await prisma.comparison.update({
+        where: { id: existing.id },
+        data: { name: parsed.data.name, payload, status: MaterialStatus.DRAFT },
+      });
+      res.json({ id: updated.id, status: updated.status, computed, highlights });
+      return;
+    }
+  }
   const row = await prisma.comparison.create({
     data: {
       userId: u.sub,

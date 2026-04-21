@@ -1,3 +1,6 @@
+import { isOfflineFile } from "./offline/isOffline";
+import { offlineApi } from "./offline/offlineApi";
+
 const BASE = "/api";
 
 export class ApiError extends Error {
@@ -9,6 +12,9 @@ export class ApiError extends Error {
 }
 
 export async function api<T>(path: string, opts: RequestInit & { token?: string | null } = {}): Promise<T> {
+  if (typeof window !== "undefined" && isOfflineFile()) {
+    return offlineApi<T>(path, opts);
+  }
   const headers = new Headers(opts.headers);
   if (!headers.has("Content-Type") && opts.body && typeof opts.body === "string") {
     headers.set("Content-Type", "application/json");

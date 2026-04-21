@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GROOT — 사이트 열기 · HTML 공유</title>
+    <style>
+      :root {
+        --blue: #3182f6;
+        --bg: #f2f4f8;
+        --card: #fff;
+        --border: #e8ecf2;
+        --text: #191f28;
+        --muted: #4e5968;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0f1419;
+          --card: #151b22;
+          --border: rgba(232, 234, 237, 0.18);
+          --text: #e8eaed;
+          --muted: #bdc1c6;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: Pretendard, -apple-system, system-ui, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.55;
+        padding: 24px 16px 48px;
+      }
+      .wrap {
+        max-width: 640px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.25rem;
+        margin: 0 0 8px;
+      }
+      .sub {
+        color: var(--muted);
+        font-size: 0.875rem;
+        margin: 0 0 20px;
+      }
+      section {
+        background: var(--card);
+        border: 0.5px solid var(--border);
+        border-radius: 12px;
+        padding: 16px 18px;
+        margin-bottom: 14px;
+      }
+      h2 {
+        font-size: 0.95rem;
+        margin: 0 0 10px;
+        color: var(--blue);
+      }
+      code,
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.8rem;
+        background: var(--bg);
+        padding: 2px 6px;
+        border-radius: 6px;
+        border: 0.5px solid var(--border);
+      }
+      pre {
+        margin: 10px 0 0;
+        padding: 12px 14px;
+        background: var(--bg);
+        border: 0.5px solid var(--border);
+        border-radius: 8px;
+        overflow-x: auto;
+        font-size: 0.78rem;
+        line-height: 1.45;
+      }
+      a.btn {
+        display: inline-block;
+        margin-top: 10px;
+        padding: 10px 14px;
+        background: var(--blue);
+        color: #fff !important;
+        text-decoration: none;
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 0.875rem;
+      }
+      a.btn:hover {
+        filter: brightness(1.05);
+      }
+      ul {
+        margin: 8px 0 0;
+        padding-left: 1.1rem;
+      }
+      li {
+        margin: 6px 0;
+      }
+      .warn {
+        font-size: 0.8125rem;
+        color: var(--muted);
+        margin-top: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>GROOT 사이트가 안 열릴 때</h1>
+      <p class="sub">
+        이 프로젝트는 브라우저에서 <strong>HTTP 서버</strong>로 열어야 합니다. <code>index.html</code>을 탐색기에서 더블클릭(<code>file://</code>)만
+        하면 동작하지 않을 수 있습니다.
+      </p>
+
+      <section>
+        <h2>Windows PowerShell에서 npm 이 막힐 때</h2>
+        <p style="margin: 0 0 8px; font-size: 0.9rem">
+          <code>npm.ps1</code>을 로드할 수 없다 / <code>Execution_Policies</code> 오류가 나면, PowerShell 실행 정책 때문에
+          <code>npm</code>이 막힌 것입니다.
+        </p>
+        <ul>
+          <li>
+            <strong>바로 해결:</strong> <code>npm</code> 대신 <code>npm.cmd install</code>, <code>npm.cmd run dev</code> 를 사용하거나,
+            <strong>명령 프롬프트(cmd)</strong>에서 <code>npm install</code>을 실행하세요.
+          </li>
+          <li>
+            <strong>한 번만 설정(선택):</strong>
+            <pre>Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned</pre>
+            이후에는 일반적으로 <code>npm</code>이 동작합니다. 회사 정책으로 막히면 위 <code>npm.cmd</code> 방식만 쓰면 됩니다.
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>0) 크롬이 하얗게만 보일 때</h2>
+        <ul>
+          <li>
+            <strong>client/index.html</strong>을 탐색기에서 더블클릭한 경우: 정상입니다. Vite 개발용 HTML은
+            <code>file://</code>로는 스크립트가 붙지 않습니다. 아래 1번처럼 <code>npm run dev</code> 후 나오는
+            <code>http://localhost:…</code> 주소로 열어야 합니다.
+          </li>
+          <li>
+            최신 빌드(<code>npm run build</code>) 후에는 <code>client/index.html</code> 안에 안내 문구가 잠시 뜨도록
+            바뀌었습니다. 그래도 비어 있으면 <kbd>F12</kbd> → Console 탭에 빨간 오류가 있는지 확인해 보세요.
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>1) 개발 모드 (API 포함, 권장)</h2>
+        <p style="margin: 0; font-size: 0.9rem">
+          루트에서 백엔드(예: 포트 4000)를 켠 뒤, 클라이언트 폴더에서:
+        </p>
+        <pre>cd client
+npm install
+npm run dev</pre>
+        <p style="margin: 8px 0 0; font-size: 0.9rem">터미널에 나온 주소로 접속하세요. 비교 탭은 해시 라우터라 아래처럼 붙입니다.</p>
+        <pre>http://localhost:5173/#/compare</pre>
+        <p class="warn">포트가 5173이 아닐 수 있으니 터미널에 표시된 URL을 그대로 쓰면 됩니다.</p>
+      </section>
+
+      <section>
+        <h2>2) 빌드 후 미리보기 (백엔드 없이 UI만 확인)</h2>
+        <pre>cd client
+npm run build
+npm run preview</pre>
+        <p style="margin: 8px 0 0; font-size: 0.9rem">기본은 4173 포트입니다.</p>
+        <a class="btn" href="http://127.0.0.1:4173/#/compare">비교 페이지 열기 (preview 켜진 경우)</a>
+      </section>
+
+      <section>
+        <h2>3) HTML 파일로 공유 (단일 파일 업데이트)</h2>
+        <p style="margin: 0; font-size: 0.9rem">
+          빌드 시 JS·CSS가 하나의 <code>index.html</code>에 들어갑니다. 공용 복사본은 아래 명령으로
+          <code>client/share/groot-latest.html</code> 에 갱신됩니다.
+        </p>
+        <pre>cd client
+npm run build:share</pre>
+        <ul>
+          <li>생성물: <span class="mono">client/share/groot-latest.html</span></li>
+          <li>받는 사람도 <strong>같은 폴더에서 정적 서버</strong>로 열어야 합니다. 예:</li>
+        </ul>
+        <pre>cd client/share
+npx --yes serve . -p 8080</pre>
+        <p style="margin: 8px 0 0; font-size: 0.9rem">그 다음 브라우저에서:</p>
+        <pre>http://127.0.0.1:8080/groot-latest.html#/compare</pre>
+        <p class="warn">
+          API(<code>/api</code>)가 없으면 로그인·저장 데이터는 동작하지 않을 수 있습니다. 그 경우 위 1번처럼 <code>npm run dev</code>와 백엔드를 함께 켜 주세요.
+        </p>
+      </section>
+
+      <section>
+        <h2>이 파일의 역할</h2>
+        <p style="margin: 0; font-size: 0.9rem">
+          <code>GROOT-열기-가이드.html</code>은 저장소에 포함되는 <strong>안내용 정적 HTML</strong>입니다. 앱 UI가 바뀌면
+          <code>npm run build:share</code>로 <code>groot-latest.html</code>만 다시 만들어 공유하면 됩니다.
+        </p>
+      </section>
+    </div>
+  </body>
+</html>

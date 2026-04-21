@@ -45,6 +45,10 @@ export const EDGE45_PAINT_RATES: Record<string, number> = {
 
 export type EdgeSelection = { top: boolean; bottom: boolean; left: boolean; right: boolean };
 
+export const PAINT_EDGE_WON_PER_M = 3500;
+export const TENONER_WON_PER_M = 800;
+export const DEFAULT_EDGE_SIDES: EdgeSelection = { top: true, bottom: true, left: true, right: true };
+
 export function edgeLengthMm(wMm: number, dMm: number, e: EdgeSelection): number {
   let mm = 0;
   if (e.top) mm += wMm;
@@ -89,6 +93,7 @@ export interface MaterialInput {
   /** ABS 엣지 색상 (WW / BI) */
   edgeColor: string;
   edgeCustomSides: EdgeCustomSides;
+  edgeSides: EdgeSelection;
   sheetPrices: Partial<Record<SheetId, number>>;
   formingM: number;
   rutaM: number;
@@ -110,6 +115,7 @@ export interface MaterialInput {
   edge45PaintM: number;
   /** 루타 2차 (m, 1,000원/m) */
   ruta2M: number;
+  tenonerMm: number;
   /** 단가 오버라이드 (관리자용) */
   unitFormingPerM: number;
   unitAssemblyPerH: number;
@@ -129,6 +135,7 @@ export function buildMaterialInput(
     edgeProfileKey?: string;
     edgeColor?: string;
     edgeCustomSides?: EdgeCustomSides;
+    edgeSides?: EdgeSelection;
     sheetPrices: Partial<Record<SheetId, number>>;
     formingM: number;
     rutaM: number;
@@ -146,6 +153,7 @@ export function buildMaterialInput(
     edge45PaintType?: string;
     edge45PaintM?: number;
     ruta2M?: number;
+    tenonerMm?: number;
     unitFormingPerM?: number;
     unitRutaPerM?: number;
     unitAssemblyPerH?: number;
@@ -175,6 +183,7 @@ export function buildMaterialInput(
     edgePreset,
     edgeColor,
     edgeCustomSides,
+    edgeSides: f.edgeSides ?? { ...DEFAULT_EDGE_SIDES },
     sheetPrices: f.sheetPrices,
     formingM: f.formingM,
     rutaM: f.rutaM,
@@ -188,6 +197,7 @@ export function buildMaterialInput(
     edge45PaintType,
     edge45PaintM,
     ruta2M: f.ruta2M ?? 0,
+    tenonerMm: f.tenonerMm ?? 0,
     unitFormingPerM: f.unitFormingPerM ?? 1000,
     unitAssemblyPerH: f.unitAssemblyPerH ?? 35,
     unitWashPerM2: f.unitWashPerM2 ?? 500,
@@ -241,6 +251,7 @@ export interface ComputedMaterial {
   edge45TapingCostWon: number;
   edge45PaintCostWon: number;
   edge45CostWon: number;
+  tenonerCostWon: number;
   processingTotalWon: number;
   grandTotalWon: number;
 }
@@ -299,6 +310,7 @@ function bestSheetPrices(input: MaterialInput): { rows: SheetYieldRow[]; bestId:
 }
 
 export function computeMaterial(input: MaterialInput, selectedSheetId: SheetId | null): ComputedMaterial {
+  const preset = input.edgePreset === "custom" ? ("abs1t" as const) : input.edgePreset;
   const { rows, bestId } = bestSheetPrices(input);
   const sel = selectedSheetId && rows.find((r) => r.sheetId === selectedSheetId)?.pieces
     ? selectedSheetId
@@ -307,16 +319,18 @@ export function computeMaterial(input: MaterialInput, selectedSheetId: SheetId |
   const row = sel ? rows.find((r) => r.sheetId === sel) : null;
   const materialCostWon = row && row.pieces > 0 ? row.costPerPiece : 0;
 
-  const edgeMm = perimeterMm(input.wMm, input.dMm);
-  const edgeLengthM = edgeMm / 1000;
-  const edgeLabel = edgeLabelFromPreset(input.edgePreset);
+  const sides: EdgeSelection =
+    preset === "none" ? { top: false, bottom: false, left: false, right: false } : input.edgeSides ?? DEFAULT_EDGE_SIDES;
+  const edgeLenMm = edgeLengthMm(input.wMm, input.dMm, sides);
+  const edgeLengthM = edgeLenMm / 1000;
+  const edgeLabel = edgeLabelFromPreset(preset);
 
   let edgeRate = 0;
-  if (input.edgePreset === "abs1t") edgeRate = abs1tRatePerM(input.hMm, input.edgeColor);
-  else if (input.edgePreset === "abs2t") edgeRate = abs2tRatePerM(input.hMm, input.edgeColor);
-  // paint / custom: 추후 구현
-  const edgeCostWon = edgeLengthM * edgeRate;
-  const applyHotmelt = input.edgePreset === "abs1t" || input.edgePreset === "abs2t";
+  if (preset === "abs1t") edgeRate = abs1tRatePerM(input.hMm, input.edgeColor);
+  else if (preset === "abs2t") edgeRate = abs2tRatePerM(input.hMm, input.edgeColor);
+  else if (preset === "paint") edgeRate = PAINT_EDGE_WON_PER_M;
+  const edgeCostWon = preset === "none" ? 0 : edgeLengthM * edgeRate;
+  const applyHotmelt = (preset === "abs1t" || preset === "abs2t") && edgeLengthM > 0;
   const hotmeltCostWon = applyHotmelt ? edgeLengthM * hotmeltWonPerLinearM(input.hMm) : 0;
 
   const cuttingSheetCount = row && row.pieces > 0 ? 1 : 0;
@@ -341,6 +355,7 @@ export function computeMaterial(input: MaterialInput, selectedSheetId: SheetId |
   const paintRate = EDGE45_PAINT_RATES[input.edge45PaintType] ?? 0;
   const edge45PaintCostWon = input.edge45PaintM * paintRate;
   const edge45CostWon = edge45TapingCostWon + edge45PaintCostWon;
+  const tenonerCostWon = (Math.max(0, input.tenonerMm) / 1000) * TENONER_WON_PER_M;
 
   const processingTotalWon =
     edgeCostWon +
@@ -353,7 +368,8 @@ export function computeMaterial(input: MaterialInput, selectedSheetId: SheetId |
     washCostWon +
     boringCostWon +
     curvedCostWon +
-    edge45CostWon;
+    edge45CostWon +
+    tenonerCostWon;
 
   const grandTotalWon = materialCostWon + processingTotalWon;
 
@@ -382,6 +398,7 @@ export function computeMaterial(input: MaterialInput, selectedSheetId: SheetId |
     edge45TapingCostWon,
     edge45PaintCostWon,
     edge45CostWon,
+    tenonerCostWon,
     processingTotalWon,
     grandTotalWon,
   };

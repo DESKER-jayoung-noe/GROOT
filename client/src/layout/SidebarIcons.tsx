@@ -1,6 +1,6 @@
-/** 라인 아이콘 — 비활성: 진한 회색, 활성: 흰색 + #2563EB 원 배경 */
+/** 라인 아이콘 — 비활성: currentColor(부모에서 color 제어), 활성: 흰색 */
 
-const inactive = "#111827";
+const inactive = "currentColor";
 const active = "#ffffff";
 
 type IconProps = { active: boolean; className?: string };
@@ -19,11 +19,18 @@ export function IconHome({ active: isActive, className }: IconProps) {
   );
 }
 
+/** 견적내기 — 연필만 (pencil-square는 작은 크기에서 세로·가로 획이 +처럼 보일 수 있음) */
 export function IconPlus({ active: isActive, className }: IconProps) {
   const stroke = isActive ? active : inactive;
   return (
     <svg className={className} width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path d="M12 5v14M5 12h14" stroke={stroke} strokeWidth="1.75" strokeLinecap="round" />
+      <path
+        d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.68-8.681Zm0 0L19.5 7.125"
+        stroke={stroke}
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }

@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import { isOfflineFile } from "./offline/isOffline";
 
 export type User = { id: string; username: string; role: "USER" | "ADMIN" };
 
@@ -13,17 +14,27 @@ const AuthContext = createContext<AuthState | null>(null);
 
 const STORAGE_KEY = "lcc_token";
 
+function initialToken(): string | null {
+  if (typeof window !== "undefined" && isOfflineFile()) return "__offline_local__";
+  return localStorage.getItem(STORAGE_KEY);
+}
+
+function initialUser(): User | null {
+  if (typeof window !== "undefined" && isOfflineFile()) {
+    return { id: "local", username: "로컬 PC", role: "ADMIN" };
+  }
+  const raw = localStorage.getItem("lcc_user");
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as User;
+  } catch {
+    return null;
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem(STORAGE_KEY));
-  const [user, setUser] = useState<User | null>(() => {
-    const raw = localStorage.getItem("lcc_user");
-    if (!raw) return null;
-    try {
-      return JSON.parse(raw) as User;
-    } catch {
-      return null;
-    }
-  });
+  const [token, setToken] = useState<string | null>(initialToken);
+  const [user, setUser] = useState<User | null>(initialUser);
 
   const setAuth = useCallback((t: string | null, u: User | null) => {
     setToken(t);

@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { packParts, type PartPacking } from "./packParts.js";
 
 /** PRD: 테이프 15.42원/m, 스티커 5.5원/EA, 세척 500원/㎡ */
 export const TAPE_WON_PER_M = 15.42;
@@ -7,9 +8,12 @@ export const CLEAN_WON_PER_M2 = 500;
 export const DEFAULT_ADMIN_RATE = 0.05;
 export const HARDWARE_WON_PER_EA = 500;
 
+export type ProductLineItem = { materialId: string; qty: number };
+
 export type ProductFormInput = {
   name: string;
-  materialIds: string[];
+  lineItems: ProductLineItem[];
+  materialIds?: string[];
   hardwareEa: number;
   stickerEa: number;
   adminRate: number;
@@ -25,7 +29,19 @@ export type ResolvedMaterialPart = {
   color: string;
   edgeProfileKey: string;
   sheetLabel: string;
+  sourceLineIndex: number;
+  packing?: PartPacking;
 };
+
+function getLineItems(form: ProductFormInput): ProductLineItem[] {
+  if (form.lineItems?.length) {
+    return form.lineItems.filter((l) => l.materialId && l.qty >= 1);
+  }
+  if (form.materialIds?.length) {
+    return form.materialIds.map((id) => ({ materialId: id, qty: 1 }));
+  }
+  return [];
+}
 
 export type ProductComputed = {
   parts: ResolvedMaterialPart[];
@@ -66,8 +82,9 @@ export async function computeProduct(
   form: ProductFormInput,
   prisma: PrismaClient
 ): Promise<ProductComputed> {
-  const ids = [...new Set(form.materialIds.filter(Boolean))];
-  if (ids.length === 0) {
+  const lineItems = getLineItems(form);
+  const ids = [...new Set(lineItems.map((l) => l.materialId).filter(Boolean))];
+  if (ids.length === 0 || lineItems.length === 0) {
     return {
       parts: [],
       partsCostWon: 0,
@@ -97,8 +114,9 @@ export async function computeProduct(
   const parts: ResolvedMaterialPart[] = [];
   let partsCostWon = 0;
 
-  for (const mid of form.materialIds) {
-    const row = byId.get(mid);
+  for (let lineIdx = 0; lineIdx < lineItems.length; lineIdx++) {
+    const { materialId, qty } = lineItems[lineIdx];
+    const row = byId.get(materialId);
     if (!row) continue;
     let grandTotalWon = 0;
     let wMm = 0;
@@ -131,41 +149,44 @@ export async function computeProduct(
     } catch {
       /* ignore */
     }
-    parts.push({
-      materialId: row.id,
-      name: row.name,
-      grandTotalWon,
-      wMm,
-      dMm,
-      hMm,
-      color,
-      edgeProfileKey,
-      sheetLabel,
-    });
-    partsCostWon += grandTotalWon;
+    for (let q = 0; q < qty; q++) {
+      parts.push({
+        materialId: row.id,
+        name: row.name,
+        grandTotalWon,
+        wMm,
+        dMm,
+        hMm,
+        color,
+        edgeProfileKey,
+        sheetLabel,
+        sourceLineIndex: lineIdx,
+      });
+      partsCostWon += grandTotalWon;
+    }
   }
 
-  let maxW = 0;
-  let maxD = 0;
-  let sumH = 0;
   let partsVolumeMm3 = 0;
   let totalSurfaceM2 = 0;
 
   for (const p of parts) {
-    maxW = Math.max(maxW, p.wMm);
-    maxD = Math.max(maxD, p.dMm);
-    sumH += p.hMm;
     partsVolumeMm3 += p.wMm * p.dMm * p.hMm;
     totalSurfaceM2 += surfaceM2(p.wMm, p.dMm, p.hMm);
   }
 
-  const boxMm = { w: maxW, d: maxD, h: sumH };
-  const boxVolumeMm3 = maxW * maxD * sumH;
+  const { box: packedBox, placements } = packParts(parts.map((p) => ({ wMm: p.wMm, dMm: p.dMm, hMm: p.hMm })));
+  parts.forEach((p, i) => {
+    const pl = placements[i];
+    if (pl) p.packing = pl;
+  });
+
+  const boxMm = { w: packedBox.w, d: packedBox.d, h: packedBox.h };
+  const boxVolumeMm3 = boxMm.w * boxMm.d * boxMm.h;
   const emptyVolumeMm3 = Math.max(0, boxVolumeMm3 - partsVolumeMm3);
   const emptyPercent = boxVolumeMm3 > 0 ? (emptyVolumeMm3 / boxVolumeMm3) * 100 : 0;
 
-  const maxEdge = Math.max(maxW, maxD, sumH);
-  const tapeM = (2 * (maxW + maxD)) / 1000;
+  const maxEdge = Math.max(boxMm.w, boxMm.d, boxMm.h);
+  const tapeM = (2 * (boxMm.w + boxMm.d)) / 1000;
   const tapeWon = tapeM * TAPE_WON_PER_M;
   const cleaningWon = totalSurfaceM2 * CLEAN_WON_PER_M2;
   const boxWon = parts.length > 0 ? boxPriceWon(maxEdge, boxVolumeMm3) : 0;
