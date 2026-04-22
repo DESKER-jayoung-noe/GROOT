@@ -1,0 +1,11 @@
+---
+description: DESKER 브랜드 UI — design guide 폴더를 UI 작업 시 참고
+globs: client/**
+alwaysApply: false
+---
+
+# DESKER 웹/툴 UI
+
+- 색·타이포·대비·금지 사항(그라데이션·과한 그림자·유채 남용)은 저장소 루트의 **`design guide/DESKER_Brand_QuickRef_for_builders.md`** 를 우선한다.
+- 카피·톤·DO/DON’T는 **`design guide/DESKER_Brand_Identity.md`** (특히 COMMUNICATION) 을 본다.
+- 구현 토큰은 **`client/src/index.css`** 의 `:root` / 다크 보정에 맞출 것.
