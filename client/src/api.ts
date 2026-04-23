@@ -1,3 +1,4 @@
+import { isServerAuthToken } from "./auth";
 import { isOfflineFile } from "./offline/isOffline";
 import { offlineApi } from "./offline/offlineApi";
 
@@ -19,7 +20,9 @@ export async function api<T>(path: string, opts: RequestInit & { token?: string 
   if (!headers.has("Content-Type") && opts.body && typeof opts.body === "string") {
     headers.set("Content-Type", "application/json");
   }
-  if (opts.token) headers.set("Authorization", `Bearer ${opts.token}`);
+  if (opts.token && isServerAuthToken(opts.token)) {
+    headers.set("Authorization", `Bearer ${opts.token}`);
+  }
   const { token, ...rest } = opts;
   const r = await fetch(`${BASE}${path}`, { ...rest, headers });
   const text = await r.text();

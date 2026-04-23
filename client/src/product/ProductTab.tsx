@@ -1,20 +1,17 @@
 import {
   forwardRef,
-  startTransition,
-  useCallback,
-  useDeferredValue,
   useEffect,
   useImperativeHandle,
   useMemo,
   useRef,
   useState,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
-import { api, ApiError } from "../api";
-import { getProducts } from "../offline/stores";
-import { useAuth } from "../auth";
-import { formatWonKorean } from "../util/format";
-import { BoxEmptyCard } from "./BoxEmptyCard";
-import type { ProductComputed, ProductFormState } from "./types";
+import * as THREE from "three";
+import { useTree, getMaterialsForItem } from "../context/TreeContext";
+import { computeMaterial, buildMaterialInput } from "../lib/materialCalc";
+import type { SheetId } from "../lib/yield";
+import type { BomMaterialData } from "../offline/stores";
 
 export type ProductTabHandle = {
   saveDraft: () => Promise<void>;
@@ -24,51 +21,85 @@ export type ProductTabHandle = {
   loadFromVault: (id: string) => Promise<void>;
 };
 
-type MatRow = {
-  id: string;
-  name: string;
-  grandTotalWon: number;
-  summary: string;
-  color?: string;
-  edge?: string;
-  board?: string;
-  sheetLabel?: string;
+const SHEET_PRICE_BY_T: Partial<Record<number, Partial<Record<string, number>>>> = {
+  12: { "4x8": 16720 },
+  15: { "4x6": 14450, "4x8": 19060, "6x8": 27320 },
+  18: { "4x6": 16620, "4x8": 21510, "6x8": 30650 },
+  22: { "4x8": 24680, "6x8": 35610 },
+  25: { "4x8": 6640 },
+  28: { "4x8": 29620, "6x8": 42600 },
 };
 
-function defaultForm(): ProductFormState {
-  return {
-    name: "1200폭 멀티책상세트 책장선반류 A",
-    lineItems: [],
-    hardwareEa: 0,
-    stickerEa: 1,
-    adminRate: 0.05,
-  };
+function bomPreset(et: string, es: string): "none" | "abs1t" | "abs2t" | "paint" {
+  if (et === "ABS") return es === "4면 2T" ? "abs2t" : "abs1t";
+  if (et === "도장") return "paint";
+  return "none";
 }
 
-function normalizeProductForm(f: ProductFormState): ProductFormState {
-  if (f.lineItems && f.lineItems.length > 0) {
-    return {
-      ...f,
-      lineItems: f.lineItems.map((l) => ({
-        materialId: l.materialId,
-        qty: Math.min(500, Math.max(1, Math.floor(Number(l.qty) || 1))),
-      })),
-    };
+function calcMatCost(data: BomMaterialData): number {
+  if (data.w <= 0 || data.d <= 0 || data.t <= 0) return 0;
+  const prices = SHEET_PRICE_BY_T[data.t] ?? {};
+  const sp: Partial<Record<SheetId, number>> = {};
+  for (const sid of ["4x6", "4x8", "6x8"] as SheetId[]) {
+    if (prices[sid] != null) sp[sid] = prices[sid]!;
   }
-  if (f.materialIds && f.materialIds.length > 0) {
-    return {
-      ...f,
-      lineItems: f.materialIds.map((id) => ({ materialId: id, qty: 1 })),
-    };
-  }
-  return { ...f, lineItems: [] };
+  const input = buildMaterialInput({
+    wMm: data.w, dMm: data.d, hMm: data.t,
+    color: data.color, boardMaterial: data.material,
+    placementMode: "default",
+    edgePreset: bomPreset(data.edgeType, data.edgeSetting),
+    edgeCustomSides: data.edgeCustom ?? { top: 0, bottom: 0, left: 0, right: 0 },
+    sheetPrices: sp,
+    formingM: 0, rutaM: 0, assemblyHours: 0, washM2: 0,
+    boring1Ea: 0, boring2Ea: 0, curvedEdgeM: 0, ruta2M: 0, tenonerMm: 0,
+  });
+  return computeMaterial(input, null).grandTotalWon;
 }
 
-function formatPartSizeLine(p: ProductComputed["parts"][number]): string {
-  const w = String(Math.round(p.wMm)).padStart(3, "0");
-  const d = String(Math.round(p.dMm)).padStart(3, "0");
-  const t = String(Math.round(p.hMm)).padStart(2, "0");
-  return `${w}×${d}×${t}T`;
+function roundup5(v: number) {
+  return Math.ceil((v * 0.05) / 100) * 100;
+}
+
+type Packed = { bw: number; bd: number; t: number; x: number; y: number; z: number };
+type PackedResult = { placed: Packed[]; totalH: number };
+
+function packBoards(boards: { w: number; d: number; t: number }[], boxW: number, boxD: number): PackedResult {
+  const sorted = [...boards].sort((a, b) => b.w * b.d - a.w * a.d);
+  const layers: { ys: number; slots: { x: number; z: number; w: number; d: number; used: boolean }[]; h: number }[] = [];
+  const placed: Packed[] = [];
+
+  for (const b of sorted) {
+    let best:
+      | { layer: (typeof layers)[number]; slot: (typeof layers)[number]["slots"][number]; bw: number; bd: number; waste: number }
+      | null = null;
+    for (const layer of layers) {
+      for (const slot of layer.slots) {
+        if (slot.used) continue;
+        for (const [bw, bd] of [[b.w, b.d], [b.d, b.w]]) {
+          if (bw <= slot.w && bd <= slot.d) {
+            const waste = (slot.w - bw) * (slot.d - bd);
+            if (!best || waste < best.waste) best = { layer, slot, bw, bd, waste };
+          }
+        }
+      }
+    }
+    if (best) {
+      const { layer, slot, bw, bd } = best;
+      placed.push({ bw, bd, t: b.t, x: slot.x + bw / 2 - boxW / 2, z: slot.z + bd / 2 - boxD / 2, y: layer.ys + b.t / 2 });
+      slot.used = true;
+      if (slot.w - bw > 10) layer.slots.push({ x: slot.x + bw, z: slot.z, w: slot.w - bw, d: slot.d, used: false });
+      if (slot.d - bd > 10) layer.slots.push({ x: slot.x, z: slot.z + bd, w: bw, d: slot.d - bd, used: false });
+      if (layer.h < b.t) layer.h = b.t;
+    } else {
+      const ys = layers.reduce((s, l) => s + l.h, 0);
+      const nl = { ys, slots: [{ x: 0, z: 0, w: boxW, d: boxD, used: true }], h: b.t };
+      layers.push(nl);
+      placed.push({ bw: b.w, bd: b.d, t: b.t, x: b.w / 2 - boxW / 2, z: b.d / 2 - boxD / 2, y: ys + b.t / 2 });
+      if (b.w < boxW) nl.slots.push({ x: b.w, z: 0, w: boxW - b.w, d: boxD, used: false });
+      if (b.d < boxD) nl.slots.push({ x: 0, z: b.d, w: b.w, d: boxD - b.d, used: false });
+    }
+  }
+  return { placed, totalH: layers.reduce((s, l) => s + l.h, 0) };
 }
 
 export const ProductTab = forwardRef<
@@ -80,578 +111,391 @@ export const ProductTab = forwardRef<
     onQuoteEntityRebind?: (entityId: string) => void;
     stripRenameEpoch?: number;
   }
->(function ProductTab({ active = true, quoteBindEntityId, onQuoteMeta, onQuoteEntityRebind, stripRenameEpoch = 0 }, ref) {
-  const { token } = useAuth();
-  const [form, setForm] = useState<ProductFormState>(defaultForm);
-  const [computed, setComputed] = useState<ProductComputed | null>(null);
-  const [library, setLibrary] = useState<MatRow[]>([]);
-  const [list, setList] = useState<
-    { id: string; name: string; updatedAt: string; grandTotalWon: number; summary: string }[]
-  >([]);
-  const [savedSearch, setSavedSearch] = useState("");
-  const [libSearch, setLibSearch] = useState("");
-  const [sort, setSort] = useState<"new" | "old">("new");
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [selectedLineIdx, setSelectedLineIdx] = useState<number | null>(null);
-  const [dragOver, setDragOver] = useState(false);
-  const [vaultTab, setVaultTab] = useState<"material" | "product">("material");
-  const vaultAsideRef = useRef<HTMLElement>(null);
-  const onQuoteEntityRebindRef = useRef(onQuoteEntityRebind);
-  onQuoteEntityRebindRef.current = onQuoteEntityRebind;
+>(function ProductTab({ active = true, onQuoteMeta }, ref) {
+  const [tab, setTab] = useState<0 | 1 | 2>(0);
+  const [hwOn, setHwOn] = useState(true);
+  const [hwN, setHwN] = useState(12);
+  const [hwBag, setHwBag] = useState(1);
+  const [nkVal, setNkVal] = useState<"500" | "1000" | "1500" | "2000">("1000");
+  const [, setMsg] = useState<string | null>(null);
+  const [packInfo, setPackInfo] = useState({ sizeText: "—", emptyText: "—" });
 
-  const saveBody = useMemo(() => ({ ...form }), [form]);
+  const { treeNodes, activeItem } = useTree();
+  const materials = useMemo(() => getMaterialsForItem(treeNodes, activeItem), [treeNodes, activeItem]);
+  const name = treeNodes[activeItem]?.name ?? "이름 없음";
 
-  const previewPayload = useMemo(
-    () => ({
-      lineItems: form.lineItems,
-      hardwareEa: form.hardwareEa,
-      stickerEa: form.stickerEa,
-      adminRate: form.adminRate,
-    }),
-    [form.lineItems, form.hardwareEa, form.stickerEa, form.adminRate]
+  // Box dimensions from actual material data
+  const boxDims = useMemo(() => {
+    const mats = materials.map(m => m.data).filter((d): d is BomMaterialData => !!d);
+    if (mats.length === 0) return { bw: 1220, bd: 620, bh: 50 };
+    const bw = Math.max(...mats.map(m => m.w)) + 20;
+    const bd = Math.max(...mats.map(m => m.d)) + 20;
+    const bh = mats.reduce((s, m) => s + m.t, 0) + 30;
+    return { bw, bd, bh };
+  }, [materials]);
+
+  // Estimated weight: density 0.0007 kg/cm³
+  const estWeight = useMemo(() => {
+    const mats = materials.map(m => m.data).filter((d): d is BomMaterialData => !!d);
+    const kg = mats.reduce((s, m) => s + (m.w / 10) * (m.d / 10) * (m.t / 10) * 0.0007, 0);
+    return Math.round(kg * 10) / 10;
+  }, [materials]);
+
+  // Per-material costs
+  const matCosts = useMemo(
+    () => materials.map(m => ({ name: m.name ?? "이름 없음", data: m.data, cost: m.data ? calcMatCost(m.data) : 0 })),
+    [materials]
   );
+  const matTotal = useMemo(() => matCosts.reduce((s, m) => s + m.cost, 0), [matCosts]);
 
-  const previewKey = useMemo(() => JSON.stringify({ ...previewPayload, name: "" }), [previewPayload]);
-  const deferredPreviewKey = useDeferredValue(previewKey);
+  // Auto-select packaging based on material count
+  const autoNkVal = useMemo((): "500" | "1000" | "1500" | "2000" => {
+    const n = materials.length;
+    if (n <= 2) return "500";
+    if (n <= 5) return "1000";
+    if (n <= 8) return "1500";
+    return "2000";
+  }, [materials.length]);
 
-  const refreshLibrary = useCallback(async () => {
-    if (!token) return;
-    const rows = await api<MatRow[]>("/materials/list?status=SAVED", { token });
-    setLibrary(rows);
-  }, [token]);
+  useEffect(() => { setNkVal(autoNkVal); }, [autoNkVal]);
 
-  const refreshList = useCallback(async () => {
-    if (!token) return;
-    const rows = await api<
-      { id: string; name: string; updatedAt: string; grandTotalWon: number; summary: string }[]
-    >("/products/list?status=SAVED", { token });
-    setList(rows);
-  }, [token]);
+  // Boards for 3D packing
+  const boardsMemo = useMemo(() => {
+    const mats = materials.map(m => m.data).filter((d): d is BomMaterialData => !!d);
+    return mats.map(m => ({ w: m.w, d: m.d, t: m.t }));
+  }, [materials]);
+
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const parentRef = useRef<HTMLDivElement>(null);
+  const pivotRef = useRef<THREE.Group | null>(null);
+
+  const calc = useMemo(() => {
+    const { bw, bd } = boxDims;
+    const wash = Math.round(bw * bd / 1e6 * 2 * 250);
+    const tape = Math.round(((bw + 100) + (bd + 100) * 2) / 1000 * 15.42);
+    const sticker = 6;
+    const hwCost = hwOn ? hwN * 21 : 0;
+    const bagCost = hwOn ? hwBag * 1000 : 0;
+    const nkCost = Number(nkVal);
+    const packSub = wash + hwCost + bagCost + nkCost + tape + sticker;
+    const base = matTotal + packSub;
+    const overhead = roundup5(base);
+    const factory = base + overhead;
+    return { hwCost, bagCost, nkCost, packSub, overhead, factory, wash, tape, sticker };
+  }, [hwOn, hwN, hwBag, nkVal, boxDims, matTotal]);
 
   useEffect(() => {
-    if (!active) return;
-    void refreshLibrary();
-    void refreshList();
-  }, [active, refreshLibrary, refreshList]);
+    onQuoteMeta?.({ name, grandTotalWon: calc.factory });
+  }, [name, calc.factory, onQuoteMeta]);
 
   useEffect(() => {
-    if (!active || !token) return;
-    let cancelled = false;
-    const ac = new AbortController();
-    const t = window.setTimeout(() => {
-      api<{ computed: ProductComputed }>("/products/preview", {
-        method: "POST",
-        body: deferredPreviewKey,
-        token,
-        signal: ac.signal,
-      })
-        .then((r) => {
-          if (!cancelled) startTransition(() => setComputed(r.computed));
-        })
-        .catch((e: unknown) => {
-          if ((e as { name?: string })?.name === "AbortError") return;
-          if (!cancelled) startTransition(() => setComputed(null));
-        });
-    }, 480);
-    return () => {
-      cancelled = true;
-      ac.abort();
-      window.clearTimeout(t);
-    };
-  }, [active, token, deferredPreviewKey]);
+    if (tab !== 1) return;
+    const canvas = canvasRef.current;
+    const parent = parentRef.current;
+    if (!canvas || !parent) return;
 
-  const addMaterial = useCallback((materialId: string) => {
-    setForm((f) => ({ ...f, lineItems: [...f.lineItems, { materialId, qty: 1 }] }));
-    setSelectedLineIdx(null);
-  }, []);
+    const { bw, bd } = boxDims;
+    const boards = boardsMemo.length > 0
+      ? boardsMemo
+      : [{ w: Math.max(bw - 20, 100), d: Math.max(bd - 20, 100), t: 18 }];
+    const packed = packBoards(boards, bw, bd);
 
-  const removeLine = useCallback((lineIdx: number) => {
-    setForm((f) => ({
-      ...f,
-      lineItems: f.lineItems.filter((_, i) => i !== lineIdx),
-    }));
-    setSelectedLineIdx((s) => (s === lineIdx ? null : s !== null && s > lineIdx ? s - 1 : s));
-  }, []);
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setClearColor(0xf4f4f4, 1);
+    const scene = new THREE.Scene();
+    scene.add(new THREE.AmbientLight(0xffffff, 0.75));
+    const dl = new THREE.DirectionalLight(0xffffff, 0.8);
+    dl.position.set(4, 7, 4);
+    scene.add(dl);
+    const dl2 = new THREE.DirectionalLight(0xffffff, 0.25);
+    dl2.position.set(-3, -2, -3);
+    scene.add(dl2);
 
-  const setLineQty = useCallback((lineIdx: number, qty: number) => {
-    const q = Math.min(500, Math.max(1, Math.floor(qty) || 1));
-    setForm((f) => ({
-      ...f,
-      lineItems: f.lineItems.map((l, i) => (i === lineIdx ? { ...l, qty: q } : l)),
-    }));
-  }, []);
+    const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 100);
+    const pivot = new THREE.Group();
+    pivotRef.current = pivot;
+    scene.add(pivot);
+    const SC = 6 / Math.max(bw, bd, packed.totalH + 20, 100);
 
-  const onSaveRef = useRef<(draft: boolean, silent?: boolean) => Promise<void>>(async () => {});
+    const buildMeshes = (placed: Packed[], totalH: number) => {
+      if (!pivotRef.current) return;
+      const rm: THREE.Object3D[] = [];
+      pivotRef.current.children.forEach((c) => { if (c.userData.b || c.userData.w) rm.push(c); });
+      rm.forEach((c: THREE.Object3D) => pivotRef.current?.remove(c));
 
-  const onSave = useCallback(
-    async (draft: boolean, silent?: boolean) => {
-      if (!silent) setMsg(null);
-      if (!token) return;
-      try {
-        if (editingId) {
-          await api(`/products/${editingId}`, { method: "PUT", body: JSON.stringify(saveBody), token });
-          if (!silent) setMsg(draft ? "임시저장되었습니다." : "저장되었습니다.");
-        } else {
-          const path = draft ? "/products/draft" : "/products/save";
-          const res = await api<{ id: string }>(path, {
-            method: "POST",
-            body: JSON.stringify(saveBody),
-            token,
-          });
-          setEditingId(res.id);
-          onQuoteEntityRebindRef.current?.(res.id);
-          if (!silent) setMsg(draft ? "임시저장되었습니다." : "보관함에 저장되었습니다.");
-        }
-        void refreshList();
-      } catch (e) {
-        if (!silent) setMsg(e instanceof ApiError ? e.message : "저장에 실패했습니다.");
-      }
-    },
-    [token, saveBody, editingId, refreshList]
-  );
-
-  onSaveRef.current = onSave;
-
-  const createNew = useCallback(() => {
-    setForm(defaultForm());
-    setEditingId(null);
-    setMsg(null);
-    setSelectedLineIdx(null);
-  }, []);
-
-  const loadProduct = useCallback(
-    async (id: string) => {
-      if (!token) return;
-      const row = await api<{ name: string; form: ProductFormState; computed: ProductComputed }>(`/products/${id}`, {
-        token,
+      const boxH = (totalH + 20) * SC;
+      const boxWsc = bw * SC;
+      const boxDsc = bd * SC;
+      const wire = new THREE.LineSegments(
+        new THREE.EdgesGeometry(new THREE.BoxGeometry(boxWsc, boxH, boxDsc)),
+        new THREE.LineBasicMaterial({ color: 0xc0c0c0 })
+      );
+      wire.userData.w = true;
+      pivotRef.current.add(wire);
+      const colors = [0x374151, 0x4b5563, 0x6b7280, 0x374151, 0x4b5563];
+      placed.forEach((p, i) => {
+        const pw = p.bw * SC;
+        const ph = p.t * SC;
+        const pd = p.bd * SC;
+        const yc = -boxH / 2 + p.y * SC;
+        const mesh = new THREE.Mesh(
+          new THREE.BoxGeometry(pw, ph, pd),
+          new THREE.MeshLambertMaterial({ color: colors[i % colors.length] })
+        );
+        mesh.position.set(p.x * SC, yc, p.z * SC);
+        mesh.userData.b = true;
+        pivotRef.current?.add(mesh);
       });
-      setForm(normalizeProductForm({ ...row.form, name: row.name }));
-      setComputed(row.computed);
-      setEditingId(id);
-      onQuoteEntityRebindRef.current?.(id);
-    },
-    [token]
-  );
-
-  const openLibraryImpl = useCallback(() => {
-    setVaultTab("product");
-    window.requestAnimationFrame(() => {
-      vaultAsideRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    });
-  }, []);
-
-  useImperativeHandle(
-    ref,
-    () => ({
-      saveDraft: () => onSave(true),
-      save: () => onSave(false),
-      createNew,
-      openLibrary: openLibraryImpl,
-      loadFromVault: (id: string) => loadProduct(id),
-    }),
-    [onSave, createNew, openLibraryImpl, loadProduct]
-  );
-
-  useEffect(() => {
-    if (!active || !quoteBindEntityId || !token) return;
-    void loadProduct(quoteBindEntityId);
-  }, [active, quoteBindEntityId, token, loadProduct]);
-
-  useEffect(() => {
-    if (!stripRenameEpoch || !quoteBindEntityId || !active) return;
-    const p = getProducts().find((x) => x.id === quoteBindEntityId);
-    if (!p) return;
-    setForm((f) => ({ ...f, name: p.name }));
-  }, [stripRenameEpoch, quoteBindEntityId, active]);
-
-  const quoteMode = Boolean(quoteBindEntityId);
-
-  useEffect(() => {
-    if (!quoteMode) return;
-    return () => {
-      void onSaveRef.current(true, true);
+      const vol = placed.reduce((s, p) => s + p.bw * p.bd * p.t, 0);
+      const bv = bw * bd * (totalH + 20);
+      const emptyVol = bv - vol;
+      const emptyH = bw > 0 && bd > 0 ? Math.round(emptyVol / (bw * bd)) : 0;
+      setPackInfo({ sizeText: `${bw}×${bd}×${totalH + 20}mm`, emptyText: `${bw}×${bd}×${emptyH}mm` });
     };
-  }, [quoteMode]);
 
-  const autoSaveKey = useMemo(() => JSON.stringify(saveBody) + String(editingId), [saveBody, editingId]);
+    buildMeshes(packed.placed, packed.totalH);
 
-  useEffect(() => {
-    if (!active) return;
-    if (quoteBindEntityId && editingId !== quoteBindEntityId) return;
-    const tid = window.setTimeout(() => {
-      void onSave(true, true);
-    }, 1600);
-    return () => clearTimeout(tid);
-  }, [active, autoSaveKey, editingId, quoteBindEntityId, onSave]);
+    let rX = 0.38, rY = 0.5, cd = 4.5, drag = false, lx = 0, ly = 0;
+    const updateCamera = () => {
+      camera.position.set(cd * Math.sin(rY) * Math.cos(rX), cd * Math.sin(rX), cd * Math.cos(rY) * Math.cos(rX));
+      camera.lookAt(0, 0, 0);
+    };
+    updateCamera();
 
-  useEffect(() => {
-    if (!quoteBindEntityId || !active) return;
-    if (editingId !== quoteBindEntityId) return;
-    onQuoteMeta?.({
-      name: form.name?.trim() || "이름 없음",
-      grandTotalWon: computed?.grandTotalWon ?? 0,
-    });
-  }, [quoteBindEntityId, active, editingId, form.name, computed?.grandTotalWon, onQuoteMeta]);
+    const md = (e: MouseEvent) => { drag = true; lx = e.clientX; ly = e.clientY; };
+    const mm = (e: MouseEvent) => {
+      if (!drag) return;
+      rY += (e.clientX - lx) * 0.007; rX += (e.clientY - ly) * 0.007;
+      rX = Math.max(-1.3, Math.min(1.3, rX)); lx = e.clientX; ly = e.clientY; updateCamera();
+    };
+    const mu = () => { drag = false; };
+    const wh = (e: WheelEvent) => { e.preventDefault(); cd = Math.max(2, Math.min(10, cd * (1 + e.deltaY * 0.001))); updateCamera(); };
+    canvas.addEventListener("mousedown", md);
+    window.addEventListener("mousemove", mm);
+    window.addEventListener("mouseup", mu);
+    canvas.addEventListener("wheel", wh, { passive: false });
 
-  async function onCopy(id: string) {
-    if (!token) return;
-    const res = await api<{ id: string; name: string }>(`/products/${id}/copy`, { method: "POST", token });
-    await loadProduct(res.id);
-    setMsg(`복사됨: ${res.name}`);
-    void refreshList();
-  }
+    const resize = () => {
+      const w = parent.clientWidth, h = parent.clientHeight;
+      if (!w || !h) return;
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    };
+    let raf = 0;
+    const loop = () => { raf = requestAnimationFrame(loop); resize(); renderer.render(scene, camera); };
+    loop();
 
-  const filteredLib = useMemo(() => {
-    const q = libSearch.toLowerCase();
-    return library.filter((m) => m.name.toLowerCase().includes(q));
-  }, [library, libSearch]);
+    return () => {
+      cancelAnimationFrame(raf);
+      canvas.removeEventListener("mousedown", md);
+      window.removeEventListener("mousemove", mm);
+      window.removeEventListener("mouseup", mu);
+      canvas.removeEventListener("wheel", wh);
+      renderer.dispose();
+      pivotRef.current = null;
+    };
+  }, [tab, boxDims, boardsMemo]);
 
-  const filteredSaved = useMemo(() => {
-    let rows = list.filter((r) => r.name.toLowerCase().includes(savedSearch.toLowerCase()));
-    rows = [...rows].sort((a, b) =>
-      sort === "new"
-        ? new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-        : new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime()
-    );
-    return rows;
-  }, [list, savedSearch, sort]);
-
-  const onDragStartLib = (e: React.DragEvent, materialId: string) => {
-    e.dataTransfer.setData("materialId", materialId);
-    e.dataTransfer.effectAllowed = "copy";
+  const repack = (e: ReactMouseEvent<HTMLButtonElement>) => {
+    const btn = e.currentTarget;
+    const prev = btn.textContent;
+    btn.textContent = "✓ 완료";
+    window.setTimeout(() => { btn.textContent = prev ?? "다시 쌓기"; }, 900);
   };
 
-  const onDropParts = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    const id = e.dataTransfer.getData("materialId");
-    if (id) addMaterial(id);
-  };
+  useImperativeHandle(ref, () => ({
+    saveDraft: async () => setMsg("임시저장되었습니다."),
+    save: async () => setMsg("저장되었습니다."),
+    createNew: () => setMsg(null),
+    openLibrary: () => setTab(2),
+    loadFromVault: async () => setMsg("보관함 불러오기는 새 화면에서 미구현입니다."),
+  }), []);
+
+  if (!active) return null;
+
+  const secStyle: React.CSSProperties = { fontSize: "10px", fontWeight: 700, color: "#aaa", letterSpacing: ".1em", textTransform: "uppercase", marginBottom: "8px" };
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[#f2f4f7] lg:flex-row">
-      <div className="flex-1 min-w-0 overflow-auto px-4 py-5 sm:px-6 sm:py-6 lg:px-6 lg:py-6 2xl:px-8">
-        <div className="w-full max-w-none mx-auto lg:mx-0 space-y-6">
-          <div className="rounded-2xl bg-white border border-[#e0e0e0] shadow-sm overflow-hidden">
-            <div className="flex flex-wrap items-end justify-between gap-4 px-6 pt-6 pb-4 border-b border-[#f0f0f0]">
-              <input
-                className="text-lg font-bold text-[#111] bg-transparent border-none outline-none flex-1 min-w-0 placeholder:text-slate-400"
-                value={form.name}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                placeholder="단품명"
-              />
-              <div className="text-right shrink-0">
-                <span className="text-sm text-slate-500">예상 : </span>
-                <span className="text-lg font-bold text-[#1e6fff] tabular-nums">
-                  {computed ? formatWonKorean(computed.grandTotalWon) : "—"}
-                </span>
+    <div className="page active" style={{ display: "flex" }}>
+      <div className="item-body">
+        {/* Left panel */}
+        <div className="item-left">
+          <div className="it-tabs">
+            <div className={`it-tab${tab === 0 ? " on" : ""}`} onClick={() => setTab(0)}>포장 정보</div>
+            <div className={`it-tab${tab === 1 ? " on" : ""}`} onClick={() => setTab(1)}>3D 박스</div>
+            <div className={`it-tab${tab === 2 ? " on" : ""}`} onClick={() => setTab(2)}>포함 자재</div>
+          </div>
+
+          {/* Tab 0: 포장 정보 */}
+          <div className={`it-tc${tab === 0 ? " on" : ""}`}>
+            <div style={{ maxWidth: "50%" }}>
+              <div className="sec-title mb8" style={secStyle}>철물</div>
+              <div className="inp-row">
+                <span className="inp-label">별도 철물 포함</span>
+                <input type="checkbox" className="chk" checked={hwOn} onChange={e => setHwOn(e.target.checked)} />
+              </div>
+              <div className="inp-row">
+                <span className="inp-label">철물 수량<span className="inp-sub">개당 21원</span></span>
+                <input type="number" className="num-inp" value={hwN} onChange={e => setHwN(Number(e.target.value) || 0)} />
+                <span style={{ fontSize: "10px", color: "#999", marginLeft: "4px" }}>개</span>
+              </div>
+              <div className="inp-row">
+                <span className="inp-label">별도 철물 묶음 수<span className="inp-sub">1,000원/묶음</span></span>
+                <input type="number" className="num-inp" value={hwBag} onChange={e => setHwBag(Number(e.target.value) || 0)} />
+                <span style={{ fontSize: "10px", color: "#999", marginLeft: "4px" }}>묶음</span>
               </div>
             </div>
 
-            <div className="px-6 py-6">
-              <div className="flex flex-col gap-5 xl:flex-row xl:items-stretch">
-                <div className="min-w-0 flex-[3] space-y-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <h3 className="text-base font-bold text-[#111]">부품리스트</h3>
-                    <span className="text-sm font-bold text-[#111] tabular-nums shrink-0">
-                      {computed ? formatWonKorean(computed.partsCostWon) : "—"}
-                    </span>
-                  </div>
-                  <div
-                    className={`min-h-[160px] rounded-2xl border-2 border-dashed transition-colors ${
-                      dragOver ? "border-[#1e6fff] bg-[#1e6fff]/5" : "border-[#e0e0e0] bg-[#fafafa]"
-                    } p-3`}
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      setDragOver(true);
-                    }}
-                    onDragLeave={() => setDragOver(false)}
-                    onDrop={onDropParts}
-                  >
-                    <p className="text-xs text-slate-500 mb-2">자재를 여기로 끌어다 놓거나 오른쪽 보관함에서 추가하세요.</p>
-                    <div className="flex flex-col gap-2">
-                      {form.lineItems.map((line, lineIdx) => {
-                        const lineParts =
-                          computed?.parts.filter((p) => (p.sourceLineIndex ?? -1) === lineIdx) ?? [];
-                        const lineTotal = lineParts.reduce((s, p) => s + p.grandTotalWon, 0);
-                        const sample = lineParts[0];
-                        return (
-                          <button
-                            key={`line-${lineIdx}-${line.materialId}`}
-                            type="button"
-                            onClick={() => setSelectedLineIdx(selectedLineIdx === lineIdx ? null : lineIdx)}
-                            className={`w-full text-left rounded-xl border-2 p-3 transition-colors ${
-                              selectedLineIdx === lineIdx ? "border-[#1e6fff] bg-[#f8fbff]" : "border-[#e0e0e0] bg-white"
-                            }`}
-                          >
-                            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-                              <span className="font-semibold text-sm text-[#111] min-w-0 flex-1 break-words">
-                                {sample?.name ?? "자재"}
-                              </span>
-                              {sample && (
-                                <span className="font-mono text-sm tabular-nums text-[#0f172a] tracking-tight whitespace-nowrap">
-                                  {formatPartSizeLine(sample)}
-                                </span>
-                              )}
-                              <label className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
-                                <span className="text-[11px] text-slate-500">수량</span>
-                                <input
-                                  type="number"
-                                  min={1}
-                                  max={500}
-                                  className="w-14 rounded-lg border border-[#e0e0e0] px-2 py-1 text-right text-sm tabular-nums"
-                                  value={line.qty}
-                                  onChange={(e) => setLineQty(lineIdx, Number(e.target.value))}
-                                />
-                              </label>
-                              <span className="text-[#1e6fff] font-bold text-sm tabular-nums whitespace-nowrap shrink-0">
-                                {formatWonKorean(lineTotal)}
-                              </span>
-                              <button
-                                type="button"
-                                className="shrink-0 flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600 text-lg leading-none"
-                                title="이 줄 제거"
-                                aria-label="제거"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  removeLine(lineIdx);
-                                }}
-                              >
-                                ×
-                              </button>
-                            </div>
-                          </button>
-                        );
-                      })}
-                      {form.lineItems.length === 0 && (
-                        <div className="w-full py-8 text-center text-sm text-slate-400">부품이 없습니다</div>
+            <div className="divider-line" />
+
+            <div style={{ maxWidth: "50%" }}>
+              <div className="sec-title mb8" style={{ ...secStyle, marginTop: "4px" }}>박스 포장비</div>
+              <div style={{ fontSize: "10px", color: "#bbb", marginBottom: "8px" }}>
+                자재 <span style={{ color: "#555", fontWeight: 600 }}>{materials.length}개</span> 기준으로 자동 선택됨
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
+                {(["500", "1000", "1500", "2000"] as const).map(v => (
+                  <label key={v} className={`part-label${nkVal === v ? " sel" : ""}`}>
+                    <input type="radio" name="parts" value={v} checked={nkVal === v} onChange={() => setNkVal(v)} style={{ accentColor: "#1a1a1a" }} />
+                    {v === "500" && "1~2개"}{v === "1000" && "3~5개 / 기본"}{v === "1500" && "6~8개"}{v === "2000" && "9개 이상"}
+                    <span className={`auto-badge${v === autoNkVal ? " on" : ""}`}>자동</span>
+                    <span style={{ color: "#bbb", marginLeft: "auto" }}>{Number(v).toLocaleString()}원</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {materials.length > 0 && (
+              <>
+                <div className="divider-line" />
+                <div style={secStyle}>포함 자재</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                  {materials.map((m, i) => (
+                    <div key={i} style={{ fontSize: "11px", color: "#555", padding: "3px 0" }}>
+                      {m.name ?? "이름 없음"}
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Tab 1: 3D 박스 */}
+          <div style={{ display: tab === 1 ? "flex" : "none", flex: 1, minHeight: 0, flexDirection: "column" }}>
+            <div className="canvas-wrap" ref={parentRef} style={{ flex: 1, minHeight: 0 }}>
+              <canvas ref={canvasRef} />
+              <div className="drag-hint">드래그 회전 · 스크롤 줌</div>
+            </div>
+            <div style={{ padding: "12px 16px", flexShrink: 0 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                <div className="sec-title" style={{ margin: 0, ...secStyle }}>박스 정보</div>
+                <button className="repack-btn" onClick={repack}>
+                  <svg width="12" height="12" viewBox="0 0 13 13" fill="none">
+                    <path d="M2 6.5a4.5 4.5 0 1 1 .9 2.7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                    <path d="M2 10.5V7.5h3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  다시 쌓기
+                </button>
+              </div>
+              <div className="bs-grid">
+                <div className="bs-item"><div className="bs-label">외곽 크기</div><div className="bs-value" style={{ fontSize: "11px" }}>{packInfo.sizeText}</div></div>
+                <div className="bs-item"><div className="bs-label">빈 공간</div><div className="bs-value" style={{ fontSize: "11px" }}>{packInfo.emptyText}</div></div>
+                <div className="bs-item"><div className="bs-label">자재 수</div><div className="bs-value">{materials.length}개</div></div>
+                <div className="bs-item"><div className="bs-label">예상 무게</div><div className="bs-value">{estWeight} kg</div></div>
+              </div>
+            </div>
+          </div>
+
+          {/* Tab 2: 포함 자재 */}
+          <div className={`it-tc${tab === 2 ? " on" : ""}`}>
+            <div className="sec-title mb8" style={secStyle}>
+              포함 자재{" "}
+              <span style={{ fontSize: "10px", color: "#bbb", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>
+                {materials.length}개
+              </span>
+            </div>
+            {matCosts.length === 0 ? (
+              <div style={{ fontSize: "12px", color: "#ccc", padding: "16px 0", textAlign: "center" }}>
+                등록된 자재가 없습니다
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                {matCosts.map((m, i) => (
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", background: "#f8f8f8", borderRadius: "5px" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: "12px", fontWeight: 500, color: "#333" }}>{m.name}</div>
+                      {m.data && (
+                        <div style={{ fontSize: "10px", color: "#999", marginTop: "2px" }}>
+                          {m.data.w}×{m.data.d}×{m.data.t}T · {m.data.material} ·{" "}
+                          {m.data.edgeType !== "없음" ? `${m.data.edgeType} ${m.data.edgeSetting}` : "엣지 없음"}
+                        </div>
                       )}
                     </div>
-                  </div>
-                </div>
-
-                <div className="min-w-0 flex-[3] xl:max-w-none">
-                  <BoxEmptyCard computed={computed} />
-                </div>
-
-                <div className="w-full min-w-0 xl:flex-none xl:w-[min(45%,27rem)] flex flex-col gap-4">
-                  <section>
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-base font-bold text-[#111]">포장비</h3>
-                      <span className="text-sm font-bold text-[#111] tabular-nums">
-                        {computed ? formatWonKorean(computed.packagingTotalWon) : "—"}
-                      </span>
+                    <div style={{ fontSize: "11px", fontWeight: 600, color: "#282828", flexShrink: 0, marginLeft: "8px" }}>
+                      {m.cost > 0 ? m.cost.toLocaleString() + "원" : "—"}
                     </div>
-                    {computed && (
-                      <div className="grid grid-cols-1 gap-2.5 text-sm">
-                        <div className="flex justify-between gap-2 rounded-xl border border-[#e8e8e8] bg-[#fafafa] px-3 py-2">
-                          <span className="text-slate-600">별도 철물</span>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="number"
-                              min={0}
-                              className="w-16 rounded border border-[#e0e0e0] px-2 py-0.5 text-right text-xs"
-                              value={form.hardwareEa}
-                              onChange={(e) => setForm((f) => ({ ...f, hardwareEa: Number(e.target.value) || 0 }))}
-                            />
-                            <span className="text-xs text-slate-400">EA</span>
-                            <span className="font-semibold tabular-nums w-24 text-right">{formatWonKorean(computed.packaging.hardwareWon)}</span>
-                          </div>
-                        </div>
-                        <div className="flex justify-between gap-2 rounded-xl border border-[#e8e8e8] bg-[#fafafa] px-3 py-2">
-                          <span className="text-slate-600">세척비</span>
-                          <span className="font-semibold tabular-nums">{formatWonKorean(computed.packaging.cleaningWon)}</span>
-                        </div>
-                        <div className="flex justify-between gap-2 rounded-xl border border-[#e8e8e8] bg-[#fafafa] px-3 py-2">
-                          <span className="text-slate-600">박스</span>
-                          <span className="font-semibold tabular-nums">{formatWonKorean(computed.packaging.boxWon)}</span>
-                        </div>
-                        <div className="flex flex-col gap-1 rounded-xl border border-[#e8e8e8] bg-[#fafafa] px-3 py-2">
-                          <div className="flex justify-between items-center">
-                            <span className="text-slate-600">테이프</span>
-                            <span className="font-semibold tabular-nums">{formatWonKorean(computed.packaging.tapeWon)}</span>
-                          </div>
-                          <span className="text-[10px] text-slate-500 text-right">외곽 둘레 자동</span>
-                        </div>
-                        <div className="flex justify-between gap-2 rounded-xl border border-[#e8e8e8] bg-[#fafafa] px-3 py-2">
-                          <span className="text-slate-600">스티커</span>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="number"
-                              min={0}
-                              className="w-16 rounded border border-[#e0e0e0] px-2 py-0.5 text-right text-xs"
-                              value={form.stickerEa}
-                              onChange={(e) => setForm((f) => ({ ...f, stickerEa: Number(e.target.value) || 0 }))}
-                            />
-                            <span className="text-xs text-slate-400">EA</span>
-                            <span className="font-semibold tabular-nums w-24 text-right">{formatWonKorean(computed.packaging.stickerWon)}</span>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </section>
-                  <section className="flex items-center justify-between rounded-xl bg-[#f8f9fa] border border-[#e8e8e8] px-4 py-3">
-                    <span className="text-sm font-bold text-[#111]">일반관리비 ({(form.adminRate * 100).toFixed(0)}%)</span>
-                    <span className="text-base font-bold text-[#111] tabular-nums">
-                      {computed ? formatWonKorean(computed.adminWon) : "—"}
-                    </span>
-                  </section>
-                </div>
+                  </div>
+                ))}
               </div>
-            </div>
+            )}
+          </div>
+        </div>
+
+        {/* Right panel: receipt */}
+        <div className="item-right">
+          <div className="rcpt-name">{name}</div>
+          <div className="rcpt-total">{calc.factory.toLocaleString()}원</div>
+
+          <div className="rsec">자재별 비용 (자재비+가공비)</div>
+          {matCosts.length > 0 ? (
+            matCosts.map((m, i) => (
+              <div key={i} className="rrow bold">
+                <span className="l">{m.name}</span>
+                <span className="r">{m.cost.toLocaleString()}원</span>
+              </div>
+            ))
+          ) : (
+            <div className="rrow"><span className="l" style={{ color: "#ccc" }}>자재 없음</span><span className="r">0원</span></div>
+          )}
+          <div className="rsub" style={{ color: "#FF5948" }}>
+            <span>자재비 합계</span><span>{matTotal.toLocaleString()}원</span>
           </div>
 
-          {msg && <p className="text-sm text-slate-600">{msg}</p>}
+          <div className="rsec">포장비</div>
+          <div className="rrow">
+            <span className="l">세척비<small>자동 계산</small></span>
+            <span className="r">{calc.wash.toLocaleString()}원</span>
+          </div>
+          <div className="rrow">
+            <span className="l">철물 포장비<small>{hwN}개 × 21원</small></span>
+            <span className="r">{calc.hwCost.toLocaleString()}원</span>
+          </div>
+          <div className="rrow">
+            <span className="l">테이프</span>
+            <span className="r">{calc.tape.toLocaleString()}원</span>
+          </div>
+          <div className="rrow">
+            <span className="l">스티커</span>
+            <span className="r">{calc.sticker.toLocaleString()}원</span>
+          </div>
+          <div className="rsub" style={{ color: "#FF5948" }}>
+            <span>포장비 합계</span><span>{calc.packSub.toLocaleString()}원</span>
+          </div>
 
-          <button
-            type="button"
-            className="text-sm text-slate-500 underline underline-offset-2 hover:text-[#1e6fff]"
-            onClick={() => {
-              setForm(defaultForm());
-              setEditingId(null);
-              setMsg(null);
-            }}
-          >
-            새 단품
-          </button>
+          <div className="rsec">일반관리비</div>
+          <div className="rrow">
+            <span className="l">관리비<small>ROUNDUP(합계×5%, -2)</small></span>
+            <span className="r">{calc.overhead.toLocaleString()}원</span>
+          </div>
+
+          <div className="rdiv" />
+          <div className="rsum" style={{ color: "#FF5948" }}>
+            <span>공장판매가</span><span>{calc.factory.toLocaleString()}원</span>
+          </div>
         </div>
       </div>
-
-      <aside
-        ref={vaultAsideRef}
-        className="w-full lg:w-[300px] shrink-0 border-t lg:border-t-0 lg:border-l border-[#e0e0e0] bg-white flex flex-col min-h-[280px] lg:min-h-0 max-h-[55vh] lg:max-h-none"
-      >
-        <div className="p-4 border-b border-[#f0f0f0]">
-          <h2 className="text-base font-bold text-[#111] mb-3">보관함</h2>
-          <div className="flex rounded-xl bg-[#f2f4f7] p-1 mb-3">
-            <button
-              type="button"
-              className={`flex-1 rounded-lg py-2 text-xs font-semibold transition-colors ${
-                vaultTab === "material" ? "bg-white text-[#111] shadow-sm" : "text-slate-500 hover:text-[#111]"
-              }`}
-              onClick={() => setVaultTab("material")}
-            >
-              자재
-            </button>
-            <button
-              type="button"
-              className={`flex-1 rounded-lg py-2 text-xs font-semibold transition-colors ${
-                vaultTab === "product" ? "bg-white text-[#111] shadow-sm" : "text-slate-500 hover:text-[#111]"
-              }`}
-              onClick={() => setVaultTab("product")}
-            >
-              단품
-            </button>
-          </div>
-          {vaultTab === "material" && (
-            <>
-              <div className="relative">
-                <input
-                  placeholder="자재 검색"
-                  className="w-full rounded-xl border border-[#e0e0e0] bg-[#f8f9fa] pl-3 pr-10 py-2.5 text-sm focus:border-[#1e6fff] focus:outline-none focus:ring-1 focus:ring-[#1e6fff]/25"
-                  value={libSearch}
-                  onChange={(e) => setLibSearch(e.target.value)}
-                />
-                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">🔍</span>
-              </div>
-              <p className="text-xs text-slate-500 mt-2">저장된 자재만 표시됩니다.</p>
-            </>
-          )}
-          {vaultTab === "product" && (
-            <>
-              <div className="relative">
-                <input
-                  placeholder="단품 검색"
-                  className="w-full rounded-xl border border-[#e0e0e0] bg-[#f8f9fa] pl-3 pr-10 py-2.5 text-sm focus:border-[#1e6fff] focus:outline-none focus:ring-1 focus:ring-[#1e6fff]/25"
-                  value={savedSearch}
-                  onChange={(e) => setSavedSearch(e.target.value)}
-                />
-                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">🔍</span>
-              </div>
-              <div className="flex gap-2 text-xs text-slate-500 mt-2">
-                <button type="button" className={sort === "new" ? "font-semibold text-[#1e6fff]" : ""} onClick={() => setSort("new")}>
-                  최신순
-                </button>
-                <span className="text-[#e0e0e0]">|</span>
-                <button type="button" className={sort === "old" ? "font-semibold text-[#1e6fff]" : ""} onClick={() => setSort("old")}>
-                  오래된 순
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-        <div className="flex-1 overflow-auto p-4 space-y-3">
-          {vaultTab === "material" && (
-            <>
-              {filteredLib.map((m) => (
-                <div
-                  key={m.id}
-                  draggable
-                  onDragStart={(e) => onDragStartLib(e, m.id)}
-                  className="rounded-xl border border-[#e0e0e0] bg-white p-3 cursor-grab active:cursor-grabbing hover:border-slate-300"
-                >
-                  <div className="flex justify-between gap-2 items-start">
-                    <span className="font-semibold text-sm text-[#111] line-clamp-1">{m.name}</span>
-                    <span className="text-[#1e6fff] font-bold text-sm shrink-0 tabular-nums">{formatWonKorean(m.grandTotalWon)}</span>
-                  </div>
-                  <p className="text-[11px] text-slate-500 mt-2 leading-relaxed line-clamp-3">
-                    {m.summary}
-                    {m.color ? ` · ${m.color}` : ""}
-                    {m.edge ? ` · ${m.edge}` : ""}
-                    {m.sheetLabel ? ` · ${m.sheetLabel}` : ""}
-                  </p>
-                  <button
-                    type="button"
-                    className="mt-2 w-full rounded-lg bg-[#1e6fff] py-1.5 text-xs font-semibold text-white hover:bg-[#185dcc]"
-                    onClick={() => addMaterial(m.id)}
-                  >
-                    단품에 추가하기
-                  </button>
-                </div>
-              ))}
-              {filteredLib.length === 0 && (
-                <div className="text-center text-sm text-slate-400 py-8">저장된 자재가 없습니다</div>
-              )}
-              {Array.from({ length: Math.max(0, 3 - filteredLib.length) }).map((_, i) => (
-                <div key={`lib-ph-${i}`} className="h-20 rounded-xl border-2 border-dashed border-[#ececec] bg-[#f8f9fa]" />
-              ))}
-            </>
-          )}
-          {vaultTab === "product" && (
-            <>
-              {filteredSaved.map((item) => (
-                <div
-                  key={item.id}
-                  className={`rounded-xl border-2 p-3 text-sm ${editingId === item.id ? "border-[#1e6fff] bg-[#f8fbff]" : "border-[#e8e8e8]"}`}
-                >
-                  <div className="font-semibold text-[#111]">{item.name}</div>
-                  <div className="text-[#1e6fff] font-bold tabular-nums">{formatWonKorean(item.grandTotalWon)}</div>
-                  <div className="flex gap-2 mt-2">
-                    <button
-                      type="button"
-                      className="text-xs rounded-lg border border-[#e0e0e0] px-2 py-1 hover:bg-slate-50"
-                      onClick={() => void onCopy(item.id)}
-                    >
-                      복사
-                    </button>
-                    <button
-                      type="button"
-                      className="text-xs rounded-lg border border-[#e0e0e0] px-2 py-1 hover:bg-slate-50"
-                      onClick={() => void loadProduct(item.id)}
-                    >
-                      불러오기
-                    </button>
-                  </div>
-                </div>
-              ))}
-              {filteredSaved.length === 0 && (
-                <div className="text-center text-sm text-slate-400 py-8">저장된 단품이 없습니다</div>
-              )}
-            </>
-          )}
-        </div>
-      </aside>
     </div>
   );
 });

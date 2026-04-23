@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { RecentFavoritesPanels } from "../components/RecentFavoritesPanels";
 import { api } from "../api";
-import { useAuth } from "../auth";
+import { isServerAuthToken, useAuth } from "../auth";
 import { formatWonKorean } from "../util/format";
 
 type Cat = "all" | "material" | "product" | "set" | "comparison";
@@ -31,7 +31,7 @@ export function ArchivePage() {
   const [q, setQ] = useState("");
 
   useEffect(() => {
-    if (!token) return;
+    if (!isServerAuthToken(token)) return;
     const c = cat === "all" ? "all" : cat;
     api<{ items: Item[] }>(`/archive/items?category=${c}`, { token }).then((r) => setItems(r.items));
   }, [token, cat]);

@@ -8,6 +8,16 @@ import {
   layoutLabelForPlacement,
   placementLayoutGrid,
 } from "./yield";
+
+/** 배치 탭(기본|90°|혼합) + 90° 탭에서 선택한 절단 방향 → yield용 방향 */
+export function effectiveYieldPlacementMode(
+  tab: PlacementMode,
+  cutOrientation: "default" | "rotated"
+): PlacementMode {
+  if (tab === "mixed") return "mixed";
+  if (tab === "rotated") return cutOrientation;
+  return "default";
+}
 import { cuttingFeeFromPlacementCount, hotmeltPricePerM2 } from "./pricing";
 
 export type MaterialEdgePreset = "none" | "abs1t" | "abs2t" | "paint" | "custom";

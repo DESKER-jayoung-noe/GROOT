@@ -1,6 +1,6 @@
 import type { MaterialFormState } from "../material/MaterialTab";
 import type { ProductComputed, ProductFormState } from "../product/types";
-import { buildMaterialInput, computeMaterial } from "./materialCalc";
+import { buildMaterialInput, computeMaterial, effectiveYieldPlacementMode } from "./materialCalc";
 import { packParts } from "./packParts";
 import type { SheetId } from "./yield";
 
@@ -71,6 +71,10 @@ export function computeProductLocal(form: ProductFormState, materials: MaterialR
     const input = buildMaterialInput({
       ...row.form,
       sheetPrices: row.form.sheetPrices as Partial<Record<SheetId, number>>,
+      placementMode: effectiveYieldPlacementMode(
+        row.form.placementMode,
+        row.form.cutOrientation ?? "default"
+      ),
     });
     const comp = computeMaterial(input, (row.form.selectedSheetId ?? null) as SheetId | null);
     const grandTotalWon = comp.grandTotalWon;

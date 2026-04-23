@@ -20,6 +20,7 @@ uvicorn stp_api.main:app --host 0.0.0.0 --port 8000 --reload
 |--------|------|------|
 | POST | `/api/parse/stp-zip` | STP ZIP + BOM 파싱 |
 | POST | `/api/parse/bom-only` | BOM만 파싱 (치수 없음) |
+| POST | `/api/parse/drawing-pdf` | 도면 PDF 텍스트 파싱 → 자재 1건 |
 | GET  | `/api/health` | 헬스 체크 |
 
 ## Render 배포 (팀 공용)

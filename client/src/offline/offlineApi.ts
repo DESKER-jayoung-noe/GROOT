@@ -1,7 +1,19 @@
 import type { ProductFormState } from "../product/types";
 import { buildMaterialInput, computeMaterial } from "../lib/materialCalc";
 import type { SheetId } from "../lib/yield";
-import { computeComparisonLocal, diffHighlights, type SlotRef } from "../lib/comparisonCalcLocal";
+/** 비교 페이지 제거 후 오프라인 API용 최소 스텁 (저장/미리보기 응답 형태 유지) */
+type ComparisonSlotRef = { kind: "material" | "product" | "set"; id: string };
+
+function stubComparisonComputed(slots: unknown) {
+  const arr = Array.isArray(slots) ? slots : [];
+  const columns: (null)[] = [null, null, null, null];
+  for (let i = 0; i < Math.min(4, arr.length); i++) columns[i] = null;
+  return { columns };
+}
+
+function stubDiffHighlights() {
+  return { raw: false, proc: false, total: false };
+}
 import { computeProductLocal } from "../lib/productCalcLocal";
 import { computeSetLocal } from "../lib/setCalcLocal";
 import {
@@ -283,25 +295,12 @@ export async function offlineApi<T>(path: string, opts: RequestInit & { token?: 
   // Comparisons
   if (method === "POST" && pathname === "/comparisons/preview") {
     const parsed = body as { name?: string; slots: unknown[] };
-    const slots = (parsed.slots ?? []) as (SlotRef | null)[];
-    const mats = new Map(getMaterials().map((m) => [m.id, { id: m.id, name: m.name, form: m.form }]));
-    const prods = new Map(
-      getProducts().map((p) => {
-        const e = enrichProductComputed(p);
-        return [p.id, { id: p.id, name: p.name, form: p.form, computed: e.computed }] as const;
-      })
-    );
-    const setMap = new Map(
-      getSets().map((s) => {
-        const e = enrichSetComputed(s);
-        return [s.id, { id: s.id, name: s.name, form: s.form, computed: e.computed }] as const;
-      })
-    );
-    const computed = computeComparisonLocal(slots, mats, prods, setMap);
+    const slots = (parsed.slots ?? []) as (ComparisonSlotRef | null)[];
+    const computed = stubComparisonComputed(slots);
     return {
       form: { name: parsed.name || "비교", slots: parsed.slots },
       computed,
-      highlights: diffHighlights(computed.columns),
+      highlights: stubDiffHighlights(),
     } as T;
   }
 
@@ -324,28 +323,15 @@ export async function offlineApi<T>(path: string, opts: RequestInit & { token?: 
     if (!id || id === "list") throw new Error("Not found");
     const c = getComparisons().find((x) => x.id === id);
     if (!c) throw new Error("없음");
-    const slots = (c.form.slots ?? []) as SlotRef[];
-    const mats = new Map(getMaterials().map((m) => [m.id, { id: m.id, name: m.name, form: m.form }]));
-    const prods = new Map(
-      getProducts().map((p) => {
-        const e = enrichProductComputed(p);
-        return [p.id, { id: p.id, name: p.name, form: p.form, computed: e.computed }] as const;
-      })
-    );
-    const setMap = new Map(
-      getSets().map((s) => {
-        const e = enrichSetComputed(s);
-        return [s.id, { id: s.id, name: s.name, form: s.form, computed: e.computed }] as const;
-      })
-    );
-    const computed = computeComparisonLocal(slots, mats, prods, setMap);
+    const slots = (c.form.slots ?? []) as ComparisonSlotRef[];
+    const computed = stubComparisonComputed(slots);
     return {
       id: c.id,
       name: c.name,
       status: c.status,
       form: { name: c.form.name, slots: c.form.slots },
       computed,
-      highlights: diffHighlights(computed.columns),
+      highlights: stubDiffHighlights(),
     } as T;
   }
 
@@ -355,22 +341,9 @@ export async function offlineApi<T>(path: string, opts: RequestInit & { token?: 
     const prev = getComparisons().find((x) => x.id === id);
     if (!prev) throw new Error("없음");
     const parsed = body as { name?: string; slots?: unknown[]; finalize?: boolean };
-    const slots = (parsed.slots !== undefined ? parsed.slots : prev.form.slots) as (SlotRef | null)[];
-    const mats = new Map(getMaterials().map((m) => [m.id, { id: m.id, name: m.name, form: m.form }]));
-    const prods = new Map(
-      getProducts().map((p) => {
-        const e = enrichProductComputed(p);
-        return [p.id, { id: p.id, name: p.name, form: p.form, computed: e.computed }] as const;
-      })
-    );
-    const setMap = new Map(
-      getSets().map((s) => {
-        const e = enrichSetComputed(s);
-        return [s.id, { id: s.id, name: s.name, form: s.form, computed: e.computed }] as const;
-      })
-    );
-    const computed = computeComparisonLocal(slots, mats, prods, setMap);
-    const highlights = diffHighlights(computed.columns);
+    const slots = (parsed.slots !== undefined ? parsed.slots : prev.form.slots) as (ComparisonSlotRef | null)[];
+    const computed = stubComparisonComputed(slots);
+    const highlights = stubDiffHighlights();
     const finalize = Boolean(parsed.finalize);
     const row: StoredComparison = {
       ...prev,
@@ -387,22 +360,9 @@ export async function offlineApi<T>(path: string, opts: RequestInit & { token?: 
 
   if (method === "POST" && (pathname === "/comparisons/draft" || pathname === "/comparisons/save")) {
     const parsed = body as { name: string; slots: unknown[]; id?: string };
-    const slots = (parsed.slots ?? []) as (SlotRef | null)[];
-    const mats = new Map(getMaterials().map((m) => [m.id, { id: m.id, name: m.name, form: m.form }]));
-    const prods = new Map(
-      getProducts().map((p) => {
-        const e = enrichProductComputed(p);
-        return [p.id, { id: p.id, name: p.name, form: p.form, computed: e.computed }] as const;
-      })
-    );
-    const setMap = new Map(
-      getSets().map((s) => {
-        const e = enrichSetComputed(s);
-        return [s.id, { id: s.id, name: s.name, form: s.form, computed: e.computed }] as const;
-      })
-    );
-    const computed = computeComparisonLocal(slots, mats, prods, setMap);
-    const highlights = diffHighlights(computed.columns);
+    const slots = (parsed.slots ?? []) as (ComparisonSlotRef | null)[];
+    const computed = stubComparisonComputed(slots);
+    const highlights = stubDiffHighlights();
     const isDraft = pathname === "/comparisons/draft";
     const prev = parsed.id ? getComparisons().find((x) => x.id === parsed.id) : undefined;
     if (prev && isDraft && prev.status === "DRAFT") {

@@ -14,9 +14,19 @@ const AuthContext = createContext<AuthState | null>(null);
 
 const STORAGE_KEY = "lcc_token";
 
+/** 단일 HTML(file://) 빌드 */
+export const OFFLINE_FILE_TOKEN = "__offline_local__";
+/** 브라우저에서 서버 로그인 없이 쓰는 기본값 — 로컬 저장소(IndexedDB/LS)만 사용 */
+export const LOCAL_PC_TOKEN = "__local_pc__";
+
+/** 서버에 보낼 수 있는 Bearer 토큰인지 */
+export function isServerAuthToken(token: string | null | undefined): boolean {
+  return !!token && token !== OFFLINE_FILE_TOKEN && token !== LOCAL_PC_TOKEN;
+}
+
 function initialToken(): string | null {
-  if (typeof window !== "undefined" && isOfflineFile()) return "__offline_local__";
-  return localStorage.getItem(STORAGE_KEY);
+  if (typeof window !== "undefined" && isOfflineFile()) return OFFLINE_FILE_TOKEN;
+  return localStorage.getItem(STORAGE_KEY) ?? LOCAL_PC_TOKEN;
 }
 
 function initialUser(): User | null {
@@ -24,12 +34,14 @@ function initialUser(): User | null {
     return { id: "local", username: "로컬 PC", role: "ADMIN" };
   }
   const raw = localStorage.getItem("lcc_user");
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as User;
-  } catch {
-    return null;
+  if (raw) {
+    try {
+      return JSON.parse(raw) as User;
+    } catch {
+      /* fall through */
+    }
   }
+  return { id: "local", username: "로컬 PC", role: "USER" };
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -37,15 +49,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(initialUser);
 
   const setAuth = useCallback((t: string | null, u: User | null) => {
+    if (!t || !u) {
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem("lcc_user");
+      setToken(LOCAL_PC_TOKEN);
+      setUser({ id: "local", username: "로컬 PC", role: "USER" });
+      return;
+    }
     setToken(t);
     setUser(u);
-    if (t) localStorage.setItem(STORAGE_KEY, t);
-    else localStorage.removeItem(STORAGE_KEY);
-    if (u) localStorage.setItem("lcc_user", JSON.stringify(u));
-    else localStorage.removeItem("lcc_user");
+    localStorage.setItem(STORAGE_KEY, t);
+    localStorage.setItem("lcc_user", JSON.stringify(u));
   }, []);
 
-  const logout = useCallback(() => setAuth(null, null), [setAuth]);
+  const logout = useCallback(() => {
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem("lcc_user");
+    setToken(LOCAL_PC_TOKEN);
+    setUser({ id: "local", username: "로컬 PC", role: "USER" });
+  }, []);
 
   const value = useMemo(() => ({ token, user, setAuth, logout }), [token, user, setAuth, logout]);
 

@@ -1,7 +1,8 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import {
   buildMaterialInput,
   computeMaterial,
+  effectiveYieldPlacementMode,
   type ComputedMaterial,
   type MaterialEdgePreset,
   type SheetYieldRow,
@@ -29,6 +30,10 @@ type StpMaterial = {
   id: string;
   name: string;
   assy?: string;
+  /** PDF 파싱 등에서 별도 파트코드 */
+  partCode?: string;
+  boardMaterial?: string;
+  surfaceMaterial?: string;
   W: number | null;
   D: number | null;
   T: number | null;
@@ -43,7 +48,7 @@ type StpMaterial = {
   } | null;
   asm_parts?: Array<{ name: string; qty: number }>;
 };
-type StpApiResponse = { status: string; count: number; materials: StpMaterial[] };
+type StpApiResponse = { status: string; count: number; materials: StpMaterial[]; raw_text_length?: number };
 type ToastItem = { id: number; message: string; ok: boolean };
 
 const STP_API_URL =
@@ -106,13 +111,13 @@ function matApiToForm(mat: StpMaterial): MaterialFormState {
   else if (edgeT >= 0.5) edgePreset = "abs1t";
   return {
     name: mat.name,
-    partCode: mat.assy ?? "",
+    partCode: mat.partCode ?? mat.assy ?? "",
     wMm: mat.W != null ? Math.round(mat.W) : 0,
     dMm: mat.D != null ? Math.round(mat.D) : 0,
     hMm,
     color: "WW",
-    boardMaterial: "PB",
-    surfaceMaterial: "LPM/O",
+    boardMaterial: mat.boardMaterial ?? "PB",
+    surfaceMaterial: mat.surfaceMaterial ?? "LPM/O",
     edgePreset,
     edgeColor: "WW",
     edgeCustomSides: { top: 0, bottom: 0, left: 0, right: 0 },
@@ -123,6 +128,9 @@ function matApiToForm(mat: StpMaterial): MaterialFormState {
       right: faces.includes("right"),
     },
     placementMode: "default",
+    cutOrientation: "default",
+    showDefault: true,
+    showRotated: true,
     sheetPrices: sp,
     selectedSheetId: null,
     formingM: 0,
@@ -165,6 +173,10 @@ function computeRow(m: StoredMaterial) {
   const input = buildMaterialInput({
     ...m.form,
     sheetPrices: m.form.sheetPrices as Partial<Record<SheetId, number>>,
+    placementMode: effectiveYieldPlacementMode(
+      m.form.placementMode,
+      m.form.cutOrientation ?? "default"
+    ),
   });
   const c = computeMaterial(input, (m.form.selectedSheetId ?? null) as SheetId | null);
   const hasSize = m.form.hMm > 0;
@@ -197,21 +209,21 @@ function StackedBoxIcon() {
       style={{
         width: 28,
         height: 28,
-        border: "1.5px solid #3182f6",
+        border: "1.5px solid var(--blue)",
         borderRadius: 4,
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
         flexShrink: 0,
-        background: "#fff",
+        background: "var(--surface)",
       }}
       aria-hidden
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-        <div style={{ height: 4, borderRadius: 1, background: "#3182f6", width: 20 }} />
-        <div style={{ height: 4, borderRadius: 1, background: "#90bdf6", width: 20 }} />
-        <div style={{ height: 4, borderRadius: 1, background: "#3182f6", width: 20 }} />
-        <div style={{ height: 4, borderRadius: 1, background: "#90bdf6", width: 20 }} />
+        <div style={{ height: 4, borderRadius: 1, background: "var(--blue)", width: 20 }} />
+        <div style={{ height: 4, borderRadius: 1, background: "var(--desker-warm-300)", width: 20 }} />
+        <div style={{ height: 4, borderRadius: 1, background: "var(--blue)", width: 20 }} />
+        <div style={{ height: 4, borderRadius: 1, background: "var(--desker-warm-300)", width: 20 }} />
       </div>
     </div>
   );
@@ -222,45 +234,45 @@ const TH: React.CSSProperties = {
   padding: "9px 14px",
   fontSize: "11px",
   fontWeight: 700,
-  color: "#8b95a1",
+  color: "var(--text3)",
   textAlign: "left",
   whiteSpace: "nowrap",
-  background: "#f8f9fb",
+  background: "var(--surface2)",
   letterSpacing: "0.03em",
   userSelect: "none",
-  borderBottom: "0.5px solid #e8ecf2",
+  borderBottom: "0.5px solid var(--border)",
 };
 const TD: React.CSSProperties = {
   padding: "10px 14px",
   fontSize: "13px",
-  color: "#191f28",
+  color: "var(--text1)",
   whiteSpace: "nowrap",
   verticalAlign: "middle",
-  borderBottom: "0.5px solid #e8ecf2",
+  borderBottom: "0.5px solid var(--border)",
 };
 /** Collapsed row: 규격·사양·엣지·원장 공통 셀 스타일 */
 const TD_SPEC: React.CSSProperties = {
   fontSize: "12px",
   fontWeight: 400,
-  color: "#8b95a1",
+  color: "var(--text3)",
 };
 const BTN_PRIMARY: React.CSSProperties = {
   display: "inline-flex", alignItems: "center", gap: "5px",
-  padding: "8px 14px", borderRadius: "8px",
+  padding: "8px 14px", borderRadius: "var(--radius-sm)",
   fontSize: "13px", fontWeight: 600, cursor: "pointer",
-  border: "none", background: "#3182f6", color: "#fff", transition: "background 0.15s ease, opacity 0.15s ease",
+  border: "none", background: "var(--blue)", color: "#fff", transition: "background 0.15s ease, opacity 0.15s ease",
 };
 const BTN_OUTLINE: React.CSSProperties = {
   display: "inline-flex", alignItems: "center", gap: "5px",
-  padding: "8px 14px", borderRadius: "8px",
+  padding: "8px 14px", borderRadius: "var(--radius-sm)",
   fontSize: "13px", fontWeight: 600, cursor: "pointer",
-  background: "#fff", color: "#4e5968", border: "1px solid #dde2ea", transition: "border-color 0.15s ease, color 0.15s ease",
+  background: "var(--surface)", color: "var(--text2)", border: "1px solid var(--border2)", transition: "border-color 0.15s ease, color 0.15s ease",
 };
 const BTN_GHOST: React.CSSProperties = {
   display: "inline-flex", alignItems: "center", gap: "5px",
-  padding: "8px 14px", borderRadius: "8px",
+  padding: "8px 14px", borderRadius: "var(--radius-sm)",
   fontSize: "13px", fontWeight: 600, cursor: "pointer",
-  background: "transparent", color: "#8b95a1", border: "1px solid #e8ecf2", transition: "color 0.15s ease, border-color 0.15s ease",
+  background: "transparent", color: "var(--text3)", border: "1px solid var(--border)", transition: "color 0.15s ease, border-color 0.15s ease",
 };
 const CARD_TITLE: React.CSSProperties = {
   fontSize: "10px", fontWeight: 700, color: "var(--text3)",
@@ -288,6 +300,10 @@ const MENU_ITEM: React.CSSProperties = {
 type Props = {
   reloadSignal: number;
   onEditMaterial?: (id: string) => void;
+  /** 우측 패널에서 편집 중인 자재 — 행 하이라이트 */
+  selectedMaterialId?: string | null;
+  /** true면 행 아래 인라인 상세(RowDetailPane) 대신 부모 패널로만 편집 */
+  hideInlineMaterialDetail?: boolean;
   onAfterChange?: () => void;
   onToolbarTotals?: (p: { count: number; matWon: number; procWon: number; totalWon: number }) => void;
 };
@@ -297,8 +313,11 @@ export function MaterialQuoteTableView({
   reloadSignal,
   onAfterChange,
   onToolbarTotals,
+  onEditMaterial,
+  selectedMaterialId = null,
+  hideInlineMaterialDetail = false,
 }: Props) {
-  const { projects, activeProjectId, renameProject } = useProject();
+  const { projects, activeProjectId } = useProject();
 
   const [rows, setRows] = useState<StoredMaterial[]>([]);
   const [groups, setGroups] = useState<ProductGroup[]>([]);
@@ -315,12 +334,7 @@ export function MaterialQuoteTableView({
   // Drag-and-drop
   const [draggingMatId, setDraggingMatId] = useState<string | null>(null);
   const [dragOverGroupId, setDragOverGroupId] = useState<string | null>(null);
-  const [tableSearch, setTableSearch] = useState("");
-  /** 단품: 그룹+미그룹 / 자재: 전체 평면 목록 */
-  const [quoteListMode, setQuoteListMode] = useState<"bundles" | "materials">("bundles");
-  const [projectEditActive, setProjectEditActive] = useState(false);
-  const [projectDraft, setProjectDraft] = useState("");
-  const projectTitleInputRef = useRef<HTMLInputElement>(null);
+  const lastCheckAnchorId = useRef<string | null>(null);
   const [deleteBtnHover, setDeleteBtnHover] = useState(false);
   const [timeTick, setTimeTick] = useState(0);
 
@@ -328,17 +342,6 @@ export function MaterialQuoteTableView({
     const id = window.setInterval(() => setTimeTick((t) => t + 1), 15_000);
     return () => window.clearInterval(id);
   }, []);
-
-  useEffect(() => {
-    setProjectEditActive(false);
-  }, [activeProjectId]);
-
-  useEffect(() => {
-    if (projectEditActive && projectTitleInputRef.current) {
-      projectTitleInputRef.current.focus();
-      projectTitleInputRef.current.select();
-    }
-  }, [projectEditActive]);
 
   const handleDropOnGroup = useCallback((gid: string) => {
     if (!draggingMatId) return;
@@ -387,6 +390,24 @@ export function MaterialQuoteTableView({
     reload();
   }, [reload, reloadSignal]);
 
+  /** 격리 스토리지에 세트가 없으면 '세트 1'을 만들고(기존 자재는 모두 여기에 연결) */
+  useEffect(() => {
+    if (!activeProjectId) return;
+    const gr = loadGroups(activeProjectId);
+    if (gr.length > 0) return;
+    const list = getMaterials();
+    const ng: ProductGroup = { id: newId("grp"), name: "세트 1", materialIds: list.map((m) => m.id) };
+    saveGroups(activeProjectId, [ng]);
+    setGroups([ng]);
+    setGroupExpanded((s) => new Set([...s, ng.id]));
+  }, [activeProjectId, reloadSignal]);
+
+  useEffect(() => {
+    if (!activeProjectId) return;
+    const gr = loadGroups(activeProjectId);
+    setGroupExpanded(new Set(gr.map((g) => g.id)));
+  }, [activeProjectId]);
+
   const groupMap = useMemo(() => {
     const m = new Map<string, string>();
     for (const g of groups) {
@@ -428,12 +449,6 @@ export function MaterialQuoteTableView({
     return mostRecentUpdatedIso ? relativeTime(mostRecentUpdatedIso) : null;
   }, [mostRecentUpdatedIso, timeTick]);
 
-  const commitProjectTitle = useCallback(() => {
-    if (!activeProjectId) return;
-    renameProject(activeProjectId, projectDraft.trim() || projectName);
-    setProjectEditActive(false);
-  }, [activeProjectId, projectDraft, projectName, renameProject]);
-
   const sorted = useMemo(() => {
     if (!sortKey) return rows;
     return [...rows].sort((a, b) => {
@@ -450,23 +465,11 @@ export function MaterialQuoteTableView({
     });
   }, [rows, sortKey, sortDir]);
 
-  const tableQuery = tableSearch.trim().toLowerCase();
-  const materialMatchesSearch = useCallback(
-    (m: StoredMaterial) => {
-      if (!tableQuery) return true;
-      return m.name.toLowerCase().includes(tableQuery) || (m.form.partCode ?? "").toLowerCase().includes(tableQuery);
-    },
-    [tableQuery]
-  );
+  const materialMatchesSearch = useCallback((_m: StoredMaterial) => true, []);
 
   const ungrouped = useMemo(
     () => sorted.filter((r) => !groupMap.has(r.id) && materialMatchesSearch(r)),
     [sorted, groupMap, materialMatchesSearch]
-  );
-
-  const flatMaterialsFiltered = useMemo(
-    () => sorted.filter((r) => materialMatchesSearch(r)),
-    [sorted, materialMatchesSearch]
   );
 
   const handleSort = (key: string) => {
@@ -474,10 +477,16 @@ export function MaterialQuoteTableView({
     else { setSortKey(key); setSortDir("asc"); }
   };
 
-  const handleAdd = () => {
+  const handleAddToSet = (groupId: string) => {
     const id = createEmptyMaterialEntity();
+    const next = groups.map((g) =>
+      g.id === groupId ? { ...g, materialIds: [...g.materialIds, id] } : g
+    );
+    setGroups(next);
+    saveGroups(activeProjectId, next);
     reload();
     setRowExpanded((s) => new Set([...s, id]));
+    setGroupExpanded((s) => new Set([...s, groupId]));
     onAfterChange?.();
   };
 
@@ -525,6 +534,26 @@ export function MaterialQuoteTableView({
     setMoreMenuId(null);
   };
 
+  const handleDuplicateSet = (g: ProductGroup) => {
+    const newGid = newId("grp");
+    const newMaterialIds: string[] = [];
+    for (const mid of g.materialIds) {
+      const m = getMaterial(mid);
+      if (!m) continue;
+      const nid = newId("m");
+      newMaterialIds.push(nid);
+      putMaterial({ ...m, id: nid, name: `${m.name} (복사)`, updatedAt: new Date().toISOString() });
+    }
+    const newGroup: ProductGroup = { id: newGid, name: `${g.name} (복사)`, materialIds: newMaterialIds };
+    const next = [...groups, newGroup];
+    setGroups(next);
+    saveGroups(activeProjectId, next);
+    setGroupExpanded((s) => new Set([...s, newGid]));
+    setMoreMenuId(null);
+    reload();
+    onAfterChange?.();
+  };
+
   const computeBoxSize = (g: ProductGroup) => {
     const members = rows.filter((r) => g.materialIds.includes(r.id));
     if (!members.length) return null;
@@ -541,7 +570,7 @@ export function MaterialQuoteTableView({
     if (!checkedIds.length) return;
     const g: ProductGroup = {
       id: newId("grp"),
-      name: `새 단품 ${groups.length + 1}`,
+      name: `세트 ${groups.length + 1}`,
       materialIds: checkedIds,
     };
     const updated = [...groups, g];
@@ -588,6 +617,10 @@ export function MaterialQuoteTableView({
         const input = buildMaterialInput({
           ...form,
           sheetPrices: form.sheetPrices as Partial<Record<SheetId, number>>,
+          placementMode: effectiveYieldPlacementMode(
+            form.placementMode,
+            form.cutOrientation ?? "default"
+          ),
         });
         const c = computeMaterial(input, null);
         putMaterial({
@@ -632,33 +665,93 @@ export function MaterialQuoteTableView({
     URL.revokeObjectURL(url);
   };
 
+  const exportCsvRef = useRef(handleExportCsv);
+  exportCsvRef.current = handleExportCsv;
+
+  useEffect(() => {
+    if (!hideInlineMaterialDetail) return;
+    const openBom = () => setShowBomModal(true);
+    const exportCsv = () => exportCsvRef.current();
+    window.addEventListener("groot:open-material-bom", openBom);
+    window.addEventListener("groot:export-material-csv", exportCsv);
+    return () => {
+      window.removeEventListener("groot:open-material-bom", openBom);
+      window.removeEventListener("groot:export-material-csv", exportCsv);
+    };
+  }, [hideInlineMaterialDetail]);
+
+  useEffect(() => {
+    const onAddSet = () => {
+      const gid = newId("grp");
+      setGroups((prev) => {
+        const next: ProductGroup[] = [
+          ...prev,
+          { id: gid, name: `세트 ${prev.length + 1}`, materialIds: [] },
+        ];
+        saveGroups(activeProjectId, next);
+        return next;
+      });
+      setGroupExpanded((s) => new Set([...s, gid]));
+    };
+    window.addEventListener("groot:add-material-set", onAddSet);
+    return () => window.removeEventListener("groot:add-material-set", onAddSet);
+  }, [activeProjectId]);
+
   const toggleRow = (id: string) =>
     setRowExpanded((s) => { const ns = new Set(s); ns.has(id) ? ns.delete(id) : ns.add(id); return ns; });
   const toggleGroup = (id: string) =>
     setGroupExpanded((s) => { const ns = new Set(s); ns.has(id) ? ns.delete(id) : ns.add(id); return ns; });
-  const toggleCheck = (id: string) =>
-    setChecked((s) => { const ns = new Set(s); ns.has(id) ? ns.delete(id) : ns.add(id); return ns; });
+  const toggleCheck = (id: string, e?: MouseEvent) => {
+    if (e?.shiftKey && lastCheckAnchorId.current) {
+      const a = selectionOrderIds.indexOf(lastCheckAnchorId.current);
+      const b = selectionOrderIds.indexOf(id);
+      if (a >= 0 && b >= 0) {
+        const lo = Math.min(a, b);
+        const hi = Math.max(a, b);
+        setChecked((prev) => {
+          const n = new Set(prev);
+          for (let i = lo; i <= hi; i++) n.add(selectionOrderIds[i]!);
+          return n;
+        });
+        lastCheckAnchorId.current = id;
+        return;
+      }
+    }
+    setChecked((s) => {
+      const ns = new Set(s);
+      ns.has(id) ? ns.delete(id) : ns.add(id);
+      return ns;
+    });
+    lastCheckAnchorId.current = id;
+  };
 
   const visibleMaterialIds = useMemo(() => {
-    if (quoteListMode === "materials") {
-      return new Set(flatMaterialsFiltered.map((m) => m.id));
-    }
     const ids = new Set<string>();
     for (const r of ungrouped) ids.add(r.id);
     for (const g of groups) {
-      const members = sorted.filter((x) => g.materialIds.includes(x.id));
-      const list =
-        !tableQuery || g.name.toLowerCase().includes(tableQuery)
-          ? members
-          : members.filter(materialMatchesSearch);
-      for (const m of list) ids.add(m.id);
+      const members = sorted.filter((x) => g.materialIds.includes(x.id) && materialMatchesSearch(x));
+      for (const m of members) ids.add(m.id);
     }
     return ids;
-  }, [quoteListMode, flatMaterialsFiltered, ungrouped, groups, sorted, tableQuery, materialMatchesSearch]);
+  }, [ungrouped, groups, sorted, materialMatchesSearch]);
+
+  /** Shift+로 범위 선택할 때 사용하는 화면 순서 */
+  const selectionOrderIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const g of groups) {
+      for (const r of sorted) {
+        if (g.materialIds.includes(r.id)) ids.push(r.id);
+      }
+    }
+    for (const r of ungrouped) ids.push(r.id);
+    return ids;
+  }, [groups, sorted, ungrouped]);
 
   const allChecked = visibleMaterialIds.size > 0 && [...visibleMaterialIds].every((id) => checked.has(id));
-  const toggleAll = () =>
+  const toggleAll = () => {
+    lastCheckAnchorId.current = null;
     setChecked(allChecked ? new Set() : new Set([...visibleMaterialIds]));
+  };
 
   const SI = (key: string) => {
     if (sortKey !== key) return <span style={{ color: "var(--text3)", fontSize: "10px" }}>↕</span>;
@@ -672,102 +765,117 @@ export function MaterialQuoteTableView({
 
   const COL_SPAN_ALL = 10;
 
-  return (
-    <div
-      style={{
-        display: "flex", flexDirection: "column",
-        height: "100%", minHeight: 0,
-        background: "var(--bg)", overflow: "hidden",
-        fontFamily: "'Pretendard Variable', Pretendard, -apple-system, sans-serif",
-      }}
-    >
-      {/* Scrollable body */}
-      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "20px 24px" }}>
+  const colgroupEls = hideInlineMaterialDetail ? (
+    <colgroup>
+      <col style={{ width: "5%" }} />
+      <col style={{ width: "9%" }} />
+      <col style={{ width: "9%" }} />
+      <col style={{ width: "9%" }} />
+      <col style={{ width: "9%" }} />
+      <col style={{ width: "9%" }} />
+      <col style={{ width: "13%" }} />
+      <col style={{ width: "13%" }} />
+      <col style={{ width: "14%" }} />
+      <col style={{ width: "9%" }} />
+    </colgroup>
+  ) : (
+    <colgroup>
+      <col style={{ width: "4%" }} />
+      <col style={{ width: "28%" }} />
+      <col style={{ width: "10%" }} />
+      <col style={{ width: "11%" }} />
+      <col style={{ width: "13%" }} />
+      <col style={{ width: "11%" }} />
+      <col style={{ width: "9%" }} />
+      <col style={{ width: "9%" }} />
+      <col style={{ width: "9%" }} />
+      <col style={{ width: "4%" }} />
+    </colgroup>
+  );
 
-        {/* 대시보드: 헤더 + 툴바 + 검색 + 테이블 단일 카드 */}
+  const matThead = (
+    <thead>
+      <tr>
+        <th style={{ ...TH, textAlign: "center" }} />
+        <th
+          style={{ ...TH, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis" }}
+          colSpan={hideInlineMaterialDetail ? 5 : 1}
+          onClick={() => handleSort("name")}
+        >
+          {hideInlineMaterialDetail ? "자재" : <>이름 {SI("name")}</>}
+        </th>
+        {!hideInlineMaterialDetail ? (
+          <>
+            <th style={{ ...TH, cursor: "pointer", textAlign: "right" }} onClick={() => handleSort("wMm")}>
+              규격 {SI("wMm")}
+            </th>
+            <th style={{ ...TH, textAlign: "right" }}>사양</th>
+            <th style={{ ...TH, textAlign: "right" }}>엣지</th>
+            <th style={{ ...TH, textAlign: "right" }}>원장(수율)</th>
+          </>
+        ) : null}
+        <th style={{ ...TH, textAlign: "right", cursor: "pointer" }} onClick={() => handleSort("matWon")}>
+          원자재비 {SI("matWon")}
+        </th>
+        <th style={{ ...TH, textAlign: "right", cursor: "pointer" }} onClick={() => handleSort("procWon")}>
+          가공비 {SI("procWon")}
+        </th>
+        <th style={{ ...TH, textAlign: "right", cursor: "pointer" }} onClick={() => handleSort("totalWon")}>
+          합계 {SI("totalWon")}
+        </th>
+        <th style={{ ...TH, width: "40px" }} />
+      </tr>
+    </thead>
+  );
+
+  return (
+    <div className="quote-mat-page">
+      {/* Scrollable body */}
+      <div className="quote-mat-scroll">
+        {/* 전체 프로젝트 합계 + 공통 도구 (세트별 자재 추가는 세트 카드에서) */}
         <div
           style={{
-            background: "#fff",
-            borderRadius: "12px",
-            border: "0.5px solid #e8ecf2",
+            background: "var(--surface)",
+            borderRadius: "var(--radius)",
+            border: "1px solid var(--border)",
             overflow: "hidden",
-            marginBottom: "16px",
+            marginBottom: "12px",
           }}
         >
-        {/* Header card (TDS) */}
         <div
           style={{
-            padding: "18px 22px",
+            padding: "16px 20px",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
-            borderBottom: "0.5px solid #e8ecf2",
+            flexWrap: "wrap",
+            gap: "12px",
+            borderBottom: "0.5px solid var(--border)",
           }}
         >
           <div>
-            {projectEditActive ? (
-              <input
-                ref={projectTitleInputRef}
-                type="text"
-                value={projectDraft}
-                onChange={(e) => setProjectDraft(e.target.value)}
-                onBlur={commitProjectTitle}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    commitProjectTitle();
-                  }
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    setProjectEditActive(false);
-                  }
-                }}
-                style={{
-                  fontSize: "17px",
-                  fontWeight: 700,
-                  color: "#191f28",
-                  marginBottom: "2px",
-                  border: "1px solid #3182f6",
-                  borderRadius: "8px",
-                  padding: "4px 10px",
-                  outline: "none",
-                  fontFamily: "inherit",
-                  minWidth: "200px",
-                }}
-              />
-            ) : (
-              <div
-                style={{ fontSize: "17px", fontWeight: 700, color: "#191f28", marginBottom: "2px", cursor: "default" }}
-                title="프로젝트명 더블클릭하여 수정"
-                onDoubleClick={() => {
-                  setProjectDraft(projectName);
-                  setProjectEditActive(true);
-                }}
-              >
-                {projectName}
-              </div>
-            )}
-            <div style={{ fontSize: "12px", color: "#8b95a1", fontWeight: 400 }}>
-              {groups.length > 0 ? `${groups.length}개 단품 · ` : ""}
-              {rows.length}개 자재
+            <div style={{ fontSize: "12px", color: "var(--text3)", fontWeight: 400 }}>
+              <span style={{ color: "var(--text2)" }}>프로젝트 {projectName}</span>
+              {groups.length > 0 ? ` · ${groups.length}개 세트` : ""}
+              {` · ${rows.length}개 자재`}
               {lastRelativeLabel ? ` · ${lastRelativeLabel}` : ""}
             </div>
           </div>
-          <div style={{ display: "flex", gap: "20px", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: "20px", alignItems: "center", flexWrap: "wrap" }}>
             {[
               { label: "원자재비", value: totals.matWon, big: false },
               { label: "가공비", value: totals.procWon, big: false },
               { label: "합계", value: totals.total, big: true },
             ].map((s, i) => (
               <Fragment key={s.label}>
-                {i > 0 && <div style={{ width: "1px", height: "32px", background: "#e8ecf2" }} />}
+                {i > 0 && <div style={{ width: "1px", height: "32px", background: "var(--border)" }} />}
                 <div style={{ textAlign: "right" }}>
-                  <div style={{ fontSize: "11px", color: "#8b95a1", marginBottom: "1px", fontWeight: 400 }}>{s.label}</div>
+                  <div style={{ fontSize: "11px", color: "var(--text3)", marginBottom: "1px", fontWeight: 400 }}>{s.label}</div>
                   <div
                     style={{
                       fontSize: s.big ? "19px" : "15px",
                       fontWeight: 700,
-                      color: s.big ? "#3182f6" : "#191f28",
+                      color: s.big ? "var(--blue)" : "var(--text1)",
                     }}
                   >
                     {formatWonKorean(s.value)}
@@ -778,21 +886,18 @@ export function MaterialQuoteTableView({
           </div>
         </div>
 
-        {/* Toolbar */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", padding: "12px 16px", flexWrap: "wrap", borderBottom: "0.5px solid #e8ecf2", background: "#fff" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", padding: "10px 16px", flexWrap: "wrap", background: "var(--surface)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-          <button style={BTN_PRIMARY} onClick={handleAdd}>
-            <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-              <path d="M6.5 1v11M1 6.5h11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
-            자재 추가
-          </button>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text2)", userSelect: "none", marginRight: 4 }}>
+              <input type="checkbox" checked={allChecked} onChange={toggleAll} />
+              전체 선택
+            </label>
           <button
             type="button"
             style={{
               ...BTN_OUTLINE,
-              color: checked.size > 0 ? "#3182f6" : "#8b95a1",
-              borderColor: checked.size > 0 ? "#3182f6" : "#dde2ea",
+              color: checked.size > 0 ? "var(--blue)" : "var(--text3)",
+              borderColor: checked.size > 0 ? "var(--blue)" : "var(--border2)",
               cursor: checked.size > 0 ? "pointer" : "not-allowed",
               opacity: checked.size > 0 ? 1 : 0.55,
             }}
@@ -801,26 +906,30 @@ export function MaterialQuoteTableView({
           >
             단품 만들기
           </button>
-          <button style={BTN_OUTLINE} onClick={() => setShowBomModal(true)}>
-            <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-              <path d="M6.5 1v7M4 6l2.5 2.5L9 6M1.5 9.5v1.5a1 1 0 001 1h8a1 1 0 001-1V9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-            모델링, 도면 업로드
-          </button>
+          {!hideInlineMaterialDetail ? (
+            <button style={BTN_OUTLINE} onClick={() => setShowBomModal(true)}>
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                <path d="M6.5 1v7M4 6l2.5 2.5L9 6M1.5 9.5v1.5a1 1 0 001 1h8a1 1 0 001-1V9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              모델링, 도면 업로드
+            </button>
+          ) : null}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
-          <button type="button" style={BTN_GHOST} onClick={handleExportCsv}>
-            <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-              <path d="M1.5 3.5h10M1.5 6.5h7M1.5 9.5h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-            CSV 내보내기
-          </button>
+          {!hideInlineMaterialDetail ? (
+            <button type="button" style={BTN_GHOST} onClick={handleExportCsv}>
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                <path d="M1.5 3.5h10M1.5 6.5h7M1.5 9.5h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+              CSV 내보내기
+            </button>
+          ) : null}
           <button
             type="button"
             style={{
               ...BTN_GHOST,
-              color: checked.size === 0 ? "#b0b8c1" : deleteBtnHover ? "#e42939" : "#8b95a1",
-              borderColor: "#e8ecf2",
+              color: checked.size === 0 ? "#b0b8c1" : deleteBtnHover ? "#e42939" : "var(--text3)",
+              borderColor: "var(--border)",
               cursor: checked.size > 0 ? "pointer" : "not-allowed",
             }}
             onMouseEnter={() => setDeleteBtnHover(true)}
@@ -835,360 +944,256 @@ export function MaterialQuoteTableView({
           </button>
           </div>
         </div>
+        </div>
 
+        {rows.length === 0 && uploadingRows === 0 && (
           <div
             style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "12px",
-              flexWrap: "wrap",
-              padding: "10px 16px",
-              borderBottom: "0.5px solid #e8ecf2",
-              background: "#fff",
+              marginBottom: "12px",
+              padding: "40px 20px",
+              textAlign: "center",
+              fontSize: "13px",
+              color: "var(--text3)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius)",
+              background: "var(--surface)",
             }}
           >
-            <div
-              role="tablist"
-              aria-label="목록 보기"
-              style={{
-                display: "inline-flex",
-                flexShrink: 0,
-                gap: 4,
-                padding: 4,
-                borderRadius: 10,
-                background: "#f0f2f5",
-              }}
-            >
-              <button
-                type="button"
-                role="tab"
-                aria-selected={quoteListMode === "bundles"}
-                onClick={() => setQuoteListMode("bundles")}
-                style={{
-                  border: quoteListMode === "bundles" ? "1px solid #e8ecf2" : "1px solid transparent",
-                  borderRadius: 8,
-                  padding: "6px 14px",
-                  fontSize: 12,
-                  fontWeight: 700,
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                  background: quoteListMode === "bundles" ? "#ebf3fe" : "transparent",
-                  color: quoteListMode === "bundles" ? "#3182f6" : "#6f7a87",
-                }}
-              >
-                단품
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={quoteListMode === "materials"}
-                onClick={() => setQuoteListMode("materials")}
-                style={{
-                  border: quoteListMode === "materials" ? "1px solid #e8ecf2" : "1px solid transparent",
-                  borderRadius: 8,
-                  padding: "6px 14px",
-                  fontSize: 12,
-                  fontWeight: 700,
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                  background: quoteListMode === "materials" ? "#fff" : "transparent",
-                  color: quoteListMode === "materials" ? "#191f28" : "#6f7a87",
-                  boxShadow: quoteListMode === "materials" ? "0 0 0 1px #dde2ea inset" : undefined,
-                }}
-              >
-                자재
-              </button>
-            </div>
-            <div style={{ position: "relative", flex: "1 1 220px", minWidth: "200px" }}>
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }}>
-                <circle cx="6.5" cy="6.5" r="4" stroke="#8b95a1" strokeWidth="1.5" />
-                <path d="M10 10l3.5 3.5" stroke="#8b95a1" strokeWidth="1.5" strokeLinecap="round" />
-              </svg>
-              <input
-                type="search"
-                value={tableSearch}
-                onChange={(e) => setTableSearch(e.target.value)}
-                placeholder="이름 / 파트코드 검색"
-                style={{
-                  width: "100%",
-                  height: "32px",
-                  padding: "0 10px 0 34px",
-                  border: "1px solid #e8ecf2",
-                  borderRadius: "8px",
-                  background: "#f8f9fb",
-                  fontSize: "12px",
-                  color: "#191f28",
-                  outline: "none",
-                  fontFamily: "inherit",
-                }}
-              />
-            </div>
-            <span style={{ fontSize: "12px", color: "#8b95a1", whiteSpace: "nowrap" }}>
-              {tableQuery ? `검색 결과 ${visibleMaterialIds.size}건` : `${rows.length}개 자재`}
-            </span>
+            자재가 없습니다. 아래 세트의 「자재 추가」나 위의 모델링·도면 업로드로 추가하세요.
           </div>
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed", minWidth: "960px" }}>
-              <colgroup>
-                <col style={{ width: "4%" }} />
-                <col style={{ width: "28%" }} />
-                <col style={{ width: "10%" }} />
-                <col style={{ width: "11%" }} />
-                <col style={{ width: "13%" }} />
-                <col style={{ width: "11%" }} />
-                <col style={{ width: "9%" }} />
-                <col style={{ width: "9%" }} />
-                <col style={{ width: "9%" }} />
-                <col style={{ width: "4%" }} />
-              </colgroup>
-              <thead>
-                <tr>
-                  <th style={{ ...TH, textAlign: "center" }}>
-                    <input type="checkbox" checked={allChecked} onChange={toggleAll} />
-                  </th>
-                  <th style={{ ...TH, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis" }} onClick={() => handleSort("name")}>
-                    이름 {SI("name")}
-                  </th>
-                  <th style={{ ...TH, cursor: "pointer", textAlign: "right" }} onClick={() => handleSort("wMm")}>
-                    규격 {SI("wMm")}
-                  </th>
-                  <th style={{ ...TH, textAlign: "right" }}>사양</th>
-                  <th style={{ ...TH, textAlign: "right" }}>엣지</th>
-                  <th style={{ ...TH, textAlign: "right" }}>원장(수율)</th>
-                  <th style={{ ...TH, textAlign: "right", cursor: "pointer" }} onClick={() => handleSort("matWon")}>
-                    원자재비 {SI("matWon")}
-                  </th>
-                  <th style={{ ...TH, textAlign: "right", cursor: "pointer" }} onClick={() => handleSort("procWon")}>
-                    가공비 {SI("procWon")}
-                  </th>
-                  <th style={{ ...TH, textAlign: "right", cursor: "pointer" }} onClick={() => handleSort("totalWon")}>
-                    합계 {SI("totalWon")}
-                  </th>
-                  <th style={{ ...TH, width: "40px" }} />
-                </tr>
-              </thead>
-              <tbody>
-                {rows.length === 0 && uploadingRows === 0 && (
-                  <tr>
-                    <td colSpan={COL_SPAN_ALL} style={{ padding: "40px", textAlign: "center", fontSize: "13px", color: "var(--text3)" }}>
-                      자재가 없습니다. 「자재 추가」 또는 모델링·도면 업로드로 추가하세요.
-                    </td>
-                  </tr>
-                )}
-                {uploadingRows > 0 &&
-                  Array.from({ length: uploadingRows }, (_, i) => (
-                    <tr key={`skeleton-${i}`} style={{ borderBottom: "1px solid var(--border)" }}>
-                      <td colSpan={COL_SPAN_ALL} style={{ padding: "12px 16px" }}>
-                        <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-                          <div style={{ width: "16px", height: "16px", borderRadius: "3px", background: "var(--border2)", flexShrink: 0 }} />
-                          <div style={{ height: "14px", background: "var(--border2)", borderRadius: "4px", flex: 1, maxWidth: "200px", animation: "pulse 1.5s ease-in-out infinite" }} />
-                          <div style={{ height: "14px", background: "var(--border2)", borderRadius: "4px", width: "80px", animation: "pulse 1.5s ease-in-out infinite" }} />
-                          <div style={{ flex: 1 }} />
-                          <div style={{ height: "14px", background: "var(--border2)", borderRadius: "4px", width: "80px", animation: "pulse 1.5s ease-in-out infinite" }} />
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+        )}
+        {uploadingRows > 0 &&
+          Array.from({ length: uploadingRows }, (_, i) => (
+            <div
+              key={`skeleton-${i}`}
+              style={{ marginBottom: 8, padding: "12px 16px", border: "1px solid var(--border)", borderRadius: "var(--radius)", background: "var(--surface)" }}
+            >
+              <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+                <div style={{ width: "16px", height: "16px", borderRadius: "3px", background: "var(--border2)", flexShrink: 0 }} />
+                <div style={{ height: "14px", background: "var(--border2)", borderRadius: "4px", flex: 1, maxWidth: "200px", animation: "pulse 1.5s ease-in-out infinite" }} />
+                <div style={{ height: "14px", background: "var(--border2)", borderRadius: "4px", width: "80px", animation: "pulse 1.5s ease-in-out infinite" }} />
+                <div style={{ flex: 1 }} />
+                <div style={{ height: "14px", background: "var(--border2)", borderRadius: "4px", width: "80px", animation: "pulse 1.5s ease-in-out infinite" }} />
+              </div>
+            </div>
+          ))}
 
-                {/* 단품 모드: 그룹 + 미그룹 */}
-                {quoteListMode === "bundles" &&
-                  groups.map((g) => {
-                  const allMembers = sorted.filter((r) => g.materialIds.includes(r.id));
-                  if (!allMembers.length) return null;
-                  const members =
-                    !tableQuery || g.name.toLowerCase().includes(tableQuery)
-                      ? allMembers
-                      : allMembers.filter(materialMatchesSearch);
-                  if (!members.length) return null;
-                  const isGrpOpen = groupExpanded.has(g.id);
-                  const box = computeBoxSize(g);
-                  const grpTotal = allMembers.reduce((s, r) => s + computeRow(r).total, 0);
-                  const grpMat = allMembers.reduce((s, r) => s + computeRow(r).matWon, 0);
-                  const grpProc = allMembers.reduce((s, r) => s + computeRow(r).procWon, 0);
-                  const allMembChecked = allMembers.length > 0 && allMembers.every((r) => checked.has(r.id));
-                  const isEditingName = editingGroupId === g.id;
-
-                  return (
-                    <Fragment key={g.id}>
-                      {/* 단품 그룹 행 — TDS: chevron만 접기/펼침 */}
-                      <tr
-                        style={{
-                          background: dragOverGroupId === g.id ? "#e8f2ff" : "#f0f4ff",
-                          cursor: "pointer",
-                          borderBottom: "1px solid #dde2ea",
-                          boxShadow: "inset 3px 0 0 #3182f6",
-                          outline: dragOverGroupId === g.id ? "2px dashed #3182f6" : undefined,
-                          outlineOffset: dragOverGroupId === g.id ? "-2px" : undefined,
-                          transition: "background 150ms ease",
-                        }}
-                        onClick={(e) => {
-                          const t = e.target as HTMLElement;
-                          if (t.closest("input,button,a,textarea")) return;
-                          if (editingGroupId === g.id) return;
-                          toggleGroup(g.id);
-                        }}
-                        onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOverGroupId(g.id); }}
-                        onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverGroupId(null); }}
-                        onDrop={(e) => { e.preventDefault(); handleDropOnGroup(g.id); }}
-                      >
-                        <td style={{ ...TD, textAlign: "center" }}>
-                          <input
-                            type="checkbox"
-                            checked={allMembChecked}
-                            onChange={() =>
-                              setChecked((s) => {
-                                const ns = new Set(s);
-                                allMembers.forEach((r) => (allMembChecked ? ns.delete(r.id) : ns.add(r.id)));
-                                return ns;
-                              })
-                            }
-                          />
-                        </td>
-                        <td colSpan={5} style={{ ...TD, verticalAlign: "middle" }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                            <span
-                              style={{
-                                display: "inline-flex",
-                                alignItems: "center",
-                                borderRadius: 100,
-                                padding: "2px 8px",
-                                fontSize: 11,
-                                fontWeight: 700,
-                                background: "#ebf3fe",
-                                color: "#3182f6",
-                                flexShrink: 0,
-                              }}
-                            >
-                              단품
-                            </span>
-                            <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", minWidth: 0 }}>
-                              {isEditingName ? (
-                                <input
-                                  ref={groupNameInputRef}
-                                  type="text"
-                                  value={editingGroupName}
-                                  onChange={(e) => setEditingGroupName(e.target.value)}
-                                  onBlur={commitGroupRename}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter") { e.preventDefault(); commitGroupRename(); }
-                                    if (e.key === "Escape") { e.preventDefault(); setEditingGroupId(null); }
-                                  }}
-                                  style={{ border: "1px solid #3182f6", borderRadius: "6px", padding: "4px 8px", fontSize: "14px", fontWeight: 700, outline: "none", background: "white", fontFamily: "inherit", minWidth: "120px" }}
-                                />
-                              ) : (
-                                <span
-                                  style={{ fontSize: "14px", fontWeight: 700, color: "#191f28" }}
-                                  onDoubleClick={() => {
-                                    setEditingGroupId(g.id);
-                                    setEditingGroupName(g.name);
-                                  }}
-                                  title="단품명 더블클릭하여 수정"
-                                >
-                                  {g.name}
-                                </span>
-                              )}
-                              <span
-                                style={{
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  background: "#dde2ea",
-                                  color: "#4e5968",
-                                  borderRadius: "100px",
-                                  padding: "1px 7px",
-                                  fontSize: "11px",
-                                  fontWeight: 600,
-                                }}
-                              >
-                                {allMembers.length}개
-                              </span>
-                              {box && (
-                                <span style={{ fontSize: "11px", color: "#8b95a1", fontWeight: 400 }}>
-                                  · {box.W} × {box.D} × {box.H} mm
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </td>
-                        <td style={{ ...TD, textAlign: "right", fontSize: "13px", fontWeight: 700, color: "#8b95a1" }}>
-                          {formatWonKorean(grpMat)}
-                        </td>
-                        <td style={{ ...TD, textAlign: "right", fontSize: "13px", fontWeight: 700, color: "#8b95a1" }}>
-                          {formatWonKorean(grpProc)}
-                        </td>
-                        <td style={{ ...TD, textAlign: "right", fontSize: "15px", fontWeight: 700, color: "#3182f6" }}>
-                          {formatWonKorean(grpTotal)}
-                        </td>
-                        <td style={{ ...TD, position: "relative" }}>
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "4px" }}>
-                            <div style={{ position: "relative" }}>
-                              <button
-                                type="button"
-                                style={{ width: "22px", height: "22px", border: "none", background: "none", cursor: "pointer", color: "#8b95a1", fontSize: "14px", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "4px" }}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setMoreMenuId(moreMenuId === `g-${g.id}` ? null : `g-${g.id}`);
-                                }}
-                              >
-                                ···
-                              </button>
-                              {moreMenuId === `g-${g.id}` && (
-                                <div style={{ position: "absolute", right: 0, top: "100%", zIndex: 50, background: "white", border: "0.5px solid #e8ecf2", borderRadius: "8px", boxShadow: "0 4px 12px rgba(0,0,0,0.08)", minWidth: "130px", overflow: "hidden" }}>
-                                  <button style={MENU_ITEM} onClick={(e) => { e.stopPropagation(); setEditingGroupId(g.id); setEditingGroupName(g.name); setMoreMenuId(null); }}>단품명 수정</button>
-                                  <button style={MENU_ITEM} onClick={(e) => { e.stopPropagation(); handleDeleteGroup(g.id); }}>단품 해제</button>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-
-                      {/* Child rows */}
-                      {isGrpOpen &&
-                        members.map((m) => {
-                          const { matWon, procWon, total, hit } = computeRow(m);
-                          const isExp = rowExpanded.has(m.id);
-                          return (
-                            <Fragment key={m.id}>
-                              <MatRow
-                                m={m} matWon={matWon} procWon={procWon} total={total} hit={hit}
-                                isExpanded={isExp} isChecked={checked.has(m.id)} indent
-                                moreMenuId={moreMenuId}
-                                editingRowId={editingRowId}
-                                editingRowName={editingRowName}
-                                rowNameInputRef={rowNameInputRef}
-                                onEditingRowName={setEditingRowName}
-                                onToggle={() => toggleRow(m.id)}
-                                onCheck={() => toggleCheck(m.id)}
-                                onMoreMenu={(id) => setMoreMenuId(moreMenuId === id ? null : id)}
-                                onDuplicate={() => handleDuplicate(m)}
-                                onDelete={() => handleDelete(m.id)}
-                                onUngroup={() => handleUngroup(m.id)}
-                                onStartRename={() => { setEditingRowId(m.id); setEditingRowName(m.name); }}
-                                onCommitRename={commitRowRename}
-                                onCancelRename={() => setEditingRowId(null)}
-                                onDragStart={() => setDraggingMatId(m.id)}
-                                onDragEnd={() => setDraggingMatId(null)}
-                              />
-                              {isExp && (
-                                <tr style={{ background: "#f7faff", borderBottom: "0.5px solid #e8ecf2", transition: "background 150ms ease" }}>
-                                  <td colSpan={COL_SPAN_ALL} style={{ padding: 0 }}>
-                                    <div style={{ overflow: "hidden", transition: "max-height 150ms ease, opacity 150ms ease" }}>
-                                      <RowDetailPane materialId={m.id} indent onSaved={onSaved} />
-                                    </div>
-                                  </td>
-                                </tr>
-                              )}
-                            </Fragment>
-                          );
-                        })}
-
-                      {/* 박스 사이즈 카드 (단품 소속 자재 마지막) */}
-                      {isGrpOpen && box && (
-                        <tr style={{ background: "#fff", borderBottom: "0.5px solid #e8ecf2" }}>
-                          <td colSpan={COL_SPAN_ALL} style={{ padding: "8px 14px 8px 56px", background: "#fff" }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: "10px", background: "#ebf3fe", borderRadius: "8px", padding: "8px 14px" }}>
+        {groups.map((g) => {
+          const allMembers = sorted.filter((r) => g.materialIds.includes(r.id));
+          const members = allMembers.filter(materialMatchesSearch);
+          const isGrpOpen = groupExpanded.has(g.id);
+          const box = computeBoxSize(g);
+          const grpTotal = allMembers.reduce((s, r) => s + computeRow(r).total, 0);
+          const grpMat = allMembers.reduce((s, r) => s + computeRow(r).matWon, 0);
+          const grpProc = allMembers.reduce((s, r) => s + computeRow(r).procWon, 0);
+          const allMembChecked = allMembers.length > 0 && allMembers.every((r) => checked.has(r.id));
+          const isEditingName = editingGroupId === g.id;
+          return (
+            <div
+              key={g.id}
+              style={{
+                background: dragOverGroupId === g.id ? "var(--desker-warm-100)" : "var(--surface)",
+                borderRadius: "var(--radius)",
+                border: "1px solid var(--border)",
+                overflow: "hidden",
+                marginBottom: "16px",
+                outline: dragOverGroupId === g.id ? "2px dashed var(--blue)" : undefined,
+                outlineOffset: 0,
+                transition: "background 150ms ease",
+                boxShadow: "inset 3px 0 0 var(--blue)",
+              }}
+              onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOverGroupId(g.id); }}
+              onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverGroupId(null); }}
+              onDrop={(e) => { e.preventDefault(); handleDropOnGroup(g.id); }}
+            >
+              <div
+                style={{
+                  padding: "12px 16px",
+                  display: "flex",
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "10px",
+                  borderBottom: isGrpOpen ? "0.5px solid var(--border)" : undefined,
+                  background: "#fcfcfb",
+                }}
+              >
+                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, minWidth: 0, flex: "1 1 200px" }}>
+                  <input
+                    type="checkbox"
+                    checked={allMembChecked}
+                    onChange={() =>
+                      setChecked((s) => {
+                        const ns = new Set(s);
+                        allMembers.forEach((r) => (allMembChecked ? ns.delete(r.id) : ns.add(r.id)));
+                        return ns;
+                      })
+                    }
+                  />
+                  <button
+                    type="button"
+                    aria-label={isGrpOpen ? "접기" : "펼치기"}
+                    onClick={() => toggleGroup(g.id)}
+                    style={{ border: "none", background: "none", cursor: "pointer", color: "var(--text3)", fontSize: "11px", padding: 2, lineHeight: 1 }}
+                  >
+                    {isGrpOpen ? "▼" : "▶"}
+                  </button>
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      borderRadius: 100,
+                      padding: "2px 8px",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      background: "var(--blue-bg)",
+                      color: "var(--blue)",
+                      flexShrink: 0,
+                    }}
+                  >
+                    세트
+                  </span>
+                  {isEditingName ? (
+                    <input
+                      ref={groupNameInputRef}
+                      type="text"
+                      value={editingGroupName}
+                      onChange={(e) => setEditingGroupName(e.target.value)}
+                      onBlur={commitGroupRename}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") { e.preventDefault(); commitGroupRename(); }
+                        if (e.key === "Escape") { e.preventDefault(); setEditingGroupId(null); }
+                      }}
+                      style={{ border: "1px solid var(--blue)", borderRadius: "6px", padding: "4px 8px", fontSize: "15px", fontWeight: 700, outline: "none", background: "white", fontFamily: "inherit", minWidth: "120px" }}
+                    />
+                  ) : (
+                    <span
+                      style={{ fontSize: "15px", fontWeight: 700, color: "var(--text1)", cursor: "text" }}
+                      onDoubleClick={() => { setEditingGroupId(g.id); setEditingGroupName(g.name); }}
+                      title="세트 이름 — 더블클릭하여 수정"
+                    >
+                      {g.name}
+                    </span>
+                  )}
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      background: "var(--border2)",
+                      color: "var(--text2)",
+                      borderRadius: "100px",
+                      padding: "1px 7px",
+                      fontSize: "11px",
+                      fontWeight: 600,
+                    }}
+                  >
+                    {allMembers.length}개
+                  </span>
+                  {box && (
+                    <span style={{ fontSize: "11px", color: "var(--text3)", fontWeight: 400 }}>
+                      · {box.W} × {box.D} × {box.H} mm
+                    </span>
+                  )}
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
+                  <button type="button" style={BTN_PRIMARY} onClick={() => handleAddToSet(g.id)}>
+                    <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                      <path d="M6.5 1v11M1 6.5h11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    </svg>
+                    자재 추가
+                  </button>
+                  <div style={{ textAlign: "right", minWidth: 64 }}>
+                    <div style={{ fontSize: 10, color: "var(--text3)" }}>원자재 / 가공 / 합계</div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text2)" }}>
+                      {formatWonKorean(grpMat)} · {formatWonKorean(grpProc)} →{" "}
+                      <span style={{ color: "var(--blue)" }}>{formatWonKorean(grpTotal)}</span>
+                    </div>
+                  </div>
+                  <div style={{ position: "relative" }}>
+                    <button
+                      type="button"
+                      style={{ width: 28, height: 28, border: "none", background: "none", cursor: "pointer", color: "var(--text3)", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4 }}
+                      onClick={() => setMoreMenuId(moreMenuId === `g-${g.id}` ? null : `g-${g.id}`)}
+                    >
+                      ···
+                    </button>
+                    {moreMenuId === `g-${g.id}` && (
+                      <div style={{ position: "absolute", right: 0, top: "100%", zIndex: 50, background: "white", border: "0.5px solid var(--border)", borderRadius: 8, boxShadow: "0 4px 12px rgba(0,0,0,0.08)", minWidth: 100, overflow: "hidden" }}>
+                        <button type="button" style={MENU_ITEM} onClick={() => { handleDuplicateSet(g); }}>복사</button>
+                        <button type="button" style={MENU_ITEM} onClick={() => { handleDeleteGroup(g.id); }}>삭제</button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+              {isGrpOpen && (
+                <div style={{ overflowX: "auto" }}>
+                  <table
+                    style={{
+                      width: "100%",
+                      borderCollapse: "collapse",
+                      tableLayout: "fixed",
+                      minWidth: hideInlineMaterialDetail ? "420px" : "960px",
+                    }}
+                  >
+                    {colgroupEls}
+                    {matThead}
+                    <tbody>
+                      {members.length === 0 && (
+                        <tr>
+                          <td colSpan={COL_SPAN_ALL} style={{ padding: "20px 16px", textAlign: "center", fontSize: "12px", color: "var(--text3)" }}>
+                            이 세트에 자재가 없습니다. 「자재 추가」를 누르세요.
+                          </td>
+                        </tr>
+                      )}
+                      {members.map((m) => {
+                        const { matWon, procWon, total, hit } = computeRow(m);
+                        const isExp = rowExpanded.has(m.id);
+                        return (
+                          <Fragment key={m.id}>
+                            <MatRow
+                              m={m} matWon={matWon} procWon={procWon} total={total} hit={hit}
+                              isExpanded={hideInlineMaterialDetail ? false : isExp}
+                              isChecked={checked.has(m.id)}
+                              indent
+                              sideEditorMode={hideInlineMaterialDetail}
+                              selectedForEditor={selectedMaterialId === m.id}
+                              onOpenInEditor={() => onEditMaterial?.(m.id)}
+                              moreMenuId={moreMenuId}
+                              editingRowId={editingRowId}
+                              editingRowName={editingRowName}
+                              rowNameInputRef={rowNameInputRef}
+                              onEditingRowName={setEditingRowName}
+                              onToggle={() => toggleRow(m.id)}
+                              onCheck={(e) => toggleCheck(m.id, e)}
+                              onMoreMenu={(id) => setMoreMenuId(moreMenuId === id ? null : id)}
+                              onDuplicate={() => handleDuplicate(m)}
+                              onDelete={() => handleDelete(m.id)}
+                              onUngroup={() => handleUngroup(m.id)}
+                              onStartRename={() => { setEditingRowId(m.id); setEditingRowName(m.name); }}
+                              onCommitRename={commitRowRename}
+                              onCancelRename={() => setEditingRowId(null)}
+                              onDragStart={() => setDraggingMatId(m.id)}
+                              onDragEnd={() => setDraggingMatId(null)}
+                            />
+                            {!hideInlineMaterialDetail && isExp && (
+                              <tr style={{ background: "var(--desker-warm-50)", borderBottom: "0.5px solid var(--border)", transition: "background 150ms ease" }}>
+                                <td colSpan={COL_SPAN_ALL} style={{ padding: 0 }}>
+                                  <div style={{ overflow: "hidden", transition: "max-height 150ms ease, opacity 150ms ease" }}>
+                                    <RowDetailPane materialId={m.id} indent onSaved={onSaved} />
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })}
+                      {box && (
+                        <tr style={{ background: "var(--surface)", borderBottom: "0.5px solid var(--border)" }}>
+                          <td colSpan={COL_SPAN_ALL} style={{ padding: "8px 14px 8px 56px", background: "var(--surface)" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "10px", background: "var(--blue-bg)", borderRadius: "8px", padding: "8px 14px" }}>
                               <StackedBoxIcon />
-                              <span style={{ fontSize: "12px", color: "#185FA5", fontWeight: 500 }}>
+                              <span style={{ fontSize: "12px", color: "var(--text2)", fontWeight: 500 }}>
                                 박스 사이즈 (자재 적층 기준):{" "}
                                 <span style={{ fontWeight: 700 }}>
                                   {box.W} × {box.D} × {box.H} mm
@@ -1198,105 +1203,101 @@ export function MaterialQuoteTableView({
                           </td>
                         </tr>
                       )}
-                    </Fragment>
-                  );
-                })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          );
+        })}
 
-                {/* Ungrouped rows (단품 모드만) */}
-                {quoteListMode === "bundles" &&
-                  ungrouped.map((m) => {
-                  const { matWon, procWon, total, hit } = computeRow(m);
-                  const isExp = rowExpanded.has(m.id);
-                  return (
-                    <Fragment key={m.id}>
-                      <MatRow
-                        m={m} matWon={matWon} procWon={procWon} total={total} hit={hit}
-                        isExpanded={isExp} isChecked={checked.has(m.id)} indent={false}
-                        moreMenuId={moreMenuId}
-                        editingRowId={editingRowId}
-                        editingRowName={editingRowName}
-                        rowNameInputRef={rowNameInputRef}
-                        onEditingRowName={setEditingRowName}
-                        onToggle={() => toggleRow(m.id)}
-                        onCheck={() => toggleCheck(m.id)}
-                        onMoreMenu={(id) => setMoreMenuId(moreMenuId === id ? null : id)}
-                        onDuplicate={() => handleDuplicate(m)}
-                        onDelete={() => handleDelete(m.id)}
-                        onStartRename={() => { setEditingRowId(m.id); setEditingRowName(m.name); }}
-                        onCommitRename={commitRowRename}
-                        onCancelRename={() => setEditingRowId(null)}
-                        onDragStart={() => setDraggingMatId(m.id)}
-                        onDragEnd={() => setDraggingMatId(null)}
-                      />
-                      {isExp && (
-                        <tr style={{ background: "#f7faff", borderBottom: "0.5px solid #e8ecf2", transition: "background 150ms ease" }}>
-                          <td colSpan={COL_SPAN_ALL} style={{ padding: 0 }}>
-                            <div style={{ overflow: "hidden", transition: "max-height 150ms ease, opacity 150ms ease" }}>
-                              <RowDetailPane materialId={m.id} indent={false} onSaved={onSaved} />
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  );
-                })}
-
-                {/* 자재 모드: 전체 평면 */}
-                {quoteListMode === "materials" &&
-                  flatMaterialsFiltered.map((m) => {
-                    const { matWon, procWon, total, hit } = computeRow(m);
-                    const isExp = rowExpanded.has(m.id);
-                    return (
-                      <Fragment key={m.id}>
-                        <MatRow
-                          m={m} matWon={matWon} procWon={procWon} total={total} hit={hit}
-                          isExpanded={isExp} isChecked={checked.has(m.id)} indent={false}
-                          moreMenuId={moreMenuId}
-                          editingRowId={editingRowId}
-                          editingRowName={editingRowName}
-                          rowNameInputRef={rowNameInputRef}
-                          onEditingRowName={setEditingRowName}
-                          onToggle={() => toggleRow(m.id)}
-                          onCheck={() => toggleCheck(m.id)}
-                          onMoreMenu={(id) => setMoreMenuId(moreMenuId === id ? null : id)}
-                          onDuplicate={() => handleDuplicate(m)}
-                          onDelete={() => handleDelete(m.id)}
-                          onStartRename={() => { setEditingRowId(m.id); setEditingRowName(m.name); }}
-                          onCommitRename={commitRowRename}
-                          onCancelRename={() => setEditingRowId(null)}
-                          onDragStart={() => setDraggingMatId(m.id)}
-                          onDragEnd={() => setDraggingMatId(null)}
-                        />
-                        {isExp && (
-                          <tr style={{ background: "#f7faff", borderBottom: "0.5px solid #e8ecf2", transition: "background 150ms ease" }}>
-                            <td colSpan={COL_SPAN_ALL} style={{ padding: 0 }}>
-                              <div style={{ overflow: "hidden", transition: "max-height 150ms ease, opacity 150ms ease" }}>
-                                <RowDetailPane materialId={m.id} indent={false} onSaved={onSaved} />
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </Fragment>
-                    );
-                  })}
-
-                {/* 합계 행 */}
-                {rows.length > 0 && (
-                  <tr style={{ background: "#f8f9fb", borderTop: "2px solid #dde2ea" }}>
-                    <td colSpan={6} style={{ ...TD, fontSize: "12px", color: "#8b95a1", fontWeight: 400, paddingLeft: "14px" }}>
-                      {groups.length > 0 ? `${groups.length}개 단품 · ` : ""}
-                      {rows.length}개 자재 합계
-                    </td>
-                    <td style={{ ...TD, textAlign: "right", fontSize: "12px", fontWeight: 700, color: "#4e5968" }}>{formatWonKorean(totals.matWon)}</td>
-                    <td style={{ ...TD, textAlign: "right", fontSize: "12px", fontWeight: 700, color: "#4e5968" }}>{formatWonKorean(totals.procWon)}</td>
-                    <td style={{ ...TD, textAlign: "right", fontSize: "14px", fontWeight: 700, color: "#3182f6" }}>{formatWonKorean(totals.total)}</td>
-                    <td style={TD} />
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        {ungrouped.length > 0 && (() => {
+          const allUgChecked = ungrouped.every((r) => checked.has(r.id));
+          return (
+            <div
+              style={{
+                background: "var(--surface)",
+                borderRadius: "var(--radius)",
+                border: "1px solid var(--border)",
+                overflow: "hidden",
+                marginBottom: "16px",
+                boxShadow: "inset 3px 0 0 var(--text3)",
+              }}
+            >
+              <div style={{ padding: "10px 16px", borderBottom: "0.5px solid var(--border)", background: "#fcfcfb", display: "flex", alignItems: "center", gap: 10 }}>
+                <input
+                  type="checkbox"
+                  checked={allUgChecked}
+                  onChange={() =>
+                    setChecked((s) => {
+                      const ns = new Set(s);
+                      ungrouped.forEach((r) => (allUgChecked ? ns.delete(r.id) : ns.add(r.id)));
+                      return ns;
+                    })
+                  }
+                />
+                <span style={{ fontSize: "13px", fontWeight: 700, color: "var(--text2)" }}>미분류 자재</span>
+                <span style={{ fontSize: "11px", color: "var(--text3)" }}>({ungrouped.length}개)</span>
+              </div>
+              <div style={{ overflowX: "auto" }}>
+                <table
+                  style={{
+                    width: "100%",
+                    borderCollapse: "collapse",
+                    tableLayout: "fixed",
+                    minWidth: hideInlineMaterialDetail ? "420px" : "960px",
+                  }}
+                >
+                  {colgroupEls}
+                  {matThead}
+                  <tbody>
+                    {ungrouped.map((m) => {
+                      const { matWon, procWon, total, hit } = computeRow(m);
+                      const isExp = rowExpanded.has(m.id);
+                      return (
+                        <Fragment key={m.id}>
+                          <MatRow
+                            m={m} matWon={matWon} procWon={procWon} total={total} hit={hit}
+                            isExpanded={hideInlineMaterialDetail ? false : isExp}
+                            isChecked={checked.has(m.id)}
+                            indent={false}
+                            sideEditorMode={hideInlineMaterialDetail}
+                            selectedForEditor={selectedMaterialId === m.id}
+                            onOpenInEditor={() => onEditMaterial?.(m.id)}
+                            moreMenuId={moreMenuId}
+                            editingRowId={editingRowId}
+                            editingRowName={editingRowName}
+                            rowNameInputRef={rowNameInputRef}
+                            onEditingRowName={setEditingRowName}
+                            onToggle={() => toggleRow(m.id)}
+                            onCheck={(e) => toggleCheck(m.id, e)}
+                            onMoreMenu={(id) => setMoreMenuId(moreMenuId === id ? null : id)}
+                            onDuplicate={() => handleDuplicate(m)}
+                            onDelete={() => handleDelete(m.id)}
+                            onStartRename={() => { setEditingRowId(m.id); setEditingRowName(m.name); }}
+                            onCommitRename={commitRowRename}
+                            onCancelRename={() => setEditingRowId(null)}
+                            onDragStart={() => setDraggingMatId(m.id)}
+                            onDragEnd={() => setDraggingMatId(null)}
+                          />
+                          {!hideInlineMaterialDetail && isExp && (
+                            <tr style={{ background: "var(--desker-warm-50)", borderBottom: "0.5px solid var(--border)", transition: "background 150ms ease" }}>
+                              <td colSpan={COL_SPAN_ALL} style={{ padding: 0 }}>
+                                <div style={{ overflow: "hidden", transition: "max-height 150ms ease, opacity 150ms ease" }}>
+                                  <RowDetailPane materialId={m.id} indent={false} onSaved={onSaved} />
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()}
         </div>
 
       {/* Toast notifications */}
@@ -1344,13 +1345,17 @@ type MatRowProps = {
   matWon: number; procWon: number; total: number;
   hit: SheetYieldRow | undefined;
   isExpanded: boolean; isChecked: boolean; indent: boolean;
+  /** true면 행 클릭 시 인라인 펼침 대신 우측 편집 패널 오픈 */
+  sideEditorMode?: boolean;
+  selectedForEditor?: boolean;
+  onOpenInEditor?: () => void;
   moreMenuId: string | null;
   editingRowId: string | null;
   editingRowName: string;
   rowNameInputRef: React.RefObject<HTMLInputElement | null>;
   onEditingRowName: (n: string) => void;
   onToggle: () => void;
-  onCheck: () => void;
+  onCheck: (e: MouseEvent) => void;
   onMoreMenu: (id: string) => void;
   onDuplicate: () => void;
   onDelete: () => void;
@@ -1364,6 +1369,9 @@ type MatRowProps = {
 
 function MatRow({
   m, matWon, procWon, total, hit, isExpanded, isChecked, indent,
+  sideEditorMode = false,
+  selectedForEditor = false,
+  onOpenInEditor,
   moreMenuId, editingRowId, editingRowName, rowNameInputRef, onEditingRowName,
   onToggle, onCheck, onMoreMenu, onDuplicate, onDelete, onUngroup,
   onStartRename, onCommitRename, onCancelRename, onDragStart, onDragEnd,
@@ -1387,117 +1395,292 @@ function MatRow({
 
   const tdSpecR: CSSProperties = { ...TD, ...TD_SPEC, textAlign: "right" };
 
+  const detailSubline = (
+    <div style={{ fontSize: "11px", color: "var(--text3)", marginTop: "4px", lineHeight: 1.45 }}>
+      {specLabel} · {specSubLabel} · {m.form.edgePreset !== "none" ? fullEdgeLabel(m.form) : "없음"} · {sheetLabel}
+    </div>
+  );
+
+  const activateRow = () => {
+    if (sideEditorMode && onOpenInEditor) onOpenInEditor();
+    else onToggle();
+  };
+
+  const rowBg = sideEditorMode
+    ? selectedForEditor ? "var(--blue-bg)" : "var(--surface)"
+    : isExpanded ? "var(--desker-warm-50)" : "var(--surface)";
+  const rowInset = sideEditorMode && selectedForEditor
+    ? "inset 3px 0 0 var(--blue)"
+    : indent ? "inset 3px 0 0 var(--blue-light)" : undefined;
+
   return (
     <tr
       draggable
       onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; onDragStart(); }}
       onDragEnd={onDragEnd}
-      onClick={() => onToggle()}
+      onClick={activateRow}
       style={{
         cursor: "pointer",
-        background: isExpanded ? "#f7faff" : "#ffffff",
-        borderBottom: "0.5px solid #e8ecf2",
-        boxShadow: indent ? "inset 3px 0 0 #c9e0fd" : undefined,
+        background: rowBg,
+        borderBottom: "0.5px solid var(--border)",
+        boxShadow: rowInset,
         transition: "background 150ms ease",
       }}
     >
       <td style={{ ...TD, textAlign: "center", paddingLeft: padFirst }} onClick={(e) => e.stopPropagation()}>
-        <input type="checkbox" checked={isChecked} onChange={onCheck} />
+        <input
+          type="checkbox"
+          checked={isChecked}
+          onClick={(e) => {
+            e.stopPropagation();
+            onCheck(e);
+          }}
+          onChange={() => {}}
+        />
       </td>
-      <td
-        style={{ ...TD, maxWidth: 0, overflow: "hidden", verticalAlign: "middle" }}
-        onClick={(e) => {
-          e.stopPropagation();
-          if (nameTapRef.current != null) clearTimeout(nameTapRef.current);
-          nameTapRef.current = setTimeout(() => {
-            nameTapRef.current = null;
-            onToggle();
-          }, 280);
-        }}
-        onDoubleClick={(e) => {
-          e.stopPropagation();
-          if (nameTapRef.current != null) {
-            clearTimeout(nameTapRef.current);
-            nameTapRef.current = null;
-          }
-          onStartRename();
-        }}
-      >
-        {isEditingName ? (
-          <input
-            ref={rowNameInputRef}
-            type="text"
-            value={editingRowName}
-            onChange={(e) => onEditingRowName(e.target.value)}
-            onBlur={onCommitRename}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") { e.preventDefault(); onCommitRename(); }
-              if (e.key === "Escape") { e.preventDefault(); onCancelRename(); }
+      {sideEditorMode ? (
+        <td
+          colSpan={5}
+          style={{ ...TD, maxWidth: 0, overflow: "hidden", verticalAlign: "middle" }}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (nameTapRef.current != null) clearTimeout(nameTapRef.current);
+            nameTapRef.current = setTimeout(() => {
+              nameTapRef.current = null;
+              if (onOpenInEditor) onOpenInEditor();
+            }, 280);
+          }}
+          onDoubleClick={(e) => {
+            e.stopPropagation();
+            if (nameTapRef.current != null) {
+              clearTimeout(nameTapRef.current);
+              nameTapRef.current = null;
+            }
+            onStartRename();
+          }}
+        >
+          {isEditingName ? (
+            <input
+              ref={rowNameInputRef}
+              type="text"
+              value={editingRowName}
+              onChange={(e) => onEditingRowName(e.target.value)}
+              onBlur={onCommitRename}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  onCommitRename();
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  onCancelRename();
+                }
+              }}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                border: "1px solid var(--blue)",
+                borderRadius: "6px",
+                padding: "3px 8px",
+                fontSize: "13px",
+                fontWeight: 500,
+                outline: "none",
+                background: "white",
+                fontFamily: "inherit",
+                width: "100%",
+                maxWidth: "100%",
+                boxSizing: "border-box",
+              }}
+            />
+          ) : (
+            <div style={{ minWidth: 0 }} title="행 클릭: 자재 편집 · 이름 더블클릭: 수정">
+              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "6px" }}>
+                {indent ? (
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      borderRadius: 100,
+                      padding: "2px 7px",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      background: "var(--blue-bg)",
+                      color: "var(--text2)",
+                      flexShrink: 0,
+                    }}
+                  >
+                    자재
+                  </span>
+                ) : null}
+                <span style={{ fontWeight: 600, fontSize: "13px", color: "var(--text1)" }}>
+                  {m.name || "이름 없음"}
+                </span>
+                <span style={{ fontSize: "12px", color: "var(--text2)", fontWeight: 500 }}>{specLabel}</span>
+                {m.form.partCode ? (
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      background: "var(--blue-bg)",
+                      border: "1px solid var(--border)",
+                      borderRadius: "3px",
+                      padding: "1px 5px",
+                      fontSize: "10px",
+                      color: "var(--text3)",
+                      fontWeight: 500,
+                      fontFamily: "monospace",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {m.form.partCode}
+                  </span>
+                ) : null}
+              </div>
+              {detailSubline}
+            </div>
+          )}
+        </td>
+      ) : (
+        <>
+          <td
+            style={{ ...TD, maxWidth: 0, overflow: "hidden", verticalAlign: "middle" }}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (nameTapRef.current != null) clearTimeout(nameTapRef.current);
+              nameTapRef.current = setTimeout(() => {
+                nameTapRef.current = null;
+                if (sideEditorMode && onOpenInEditor) onOpenInEditor();
+                else onToggle();
+              }, 280);
             }}
-            onClick={(e) => e.stopPropagation()}
-            style={{ border: "1px solid #3182f6", borderRadius: "6px", padding: "3px 8px", fontSize: "13px", fontWeight: 500, outline: "none", background: "white", fontFamily: "inherit", width: "100%", maxWidth: "30ch", boxSizing: "border-box" }}
-          />
-        ) : (
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px", minWidth: 0 }} title="행 클릭: 상세 · 이름 더블클릭: 수정">
-            {indent ? (
+            onDoubleClick={(e) => {
+              e.stopPropagation();
+              if (nameTapRef.current != null) {
+                clearTimeout(nameTapRef.current);
+                nameTapRef.current = null;
+              }
+              onStartRename();
+            }}
+          >
+            {isEditingName ? (
+              <input
+                ref={rowNameInputRef}
+                type="text"
+                value={editingRowName}
+                onChange={(e) => onEditingRowName(e.target.value)}
+                onBlur={onCommitRename}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    onCommitRename();
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    onCancelRename();
+                  }
+                }}
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  border: "1px solid var(--blue)",
+                  borderRadius: "6px",
+                  padding: "3px 8px",
+                  fontSize: "13px",
+                  fontWeight: 500,
+                  outline: "none",
+                  background: "white",
+                  fontFamily: "inherit",
+                  width: "100%",
+                  maxWidth: "30ch",
+                  boxSizing: "border-box",
+                }}
+              />
+            ) : (
+              <div
+                style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px", minWidth: 0 }}
+                title={sideEditorMode ? "행 클릭: 상세 편집 · 이름 더블클릭: 수정" : "행 클릭: 상세 · 이름 더블클릭: 수정"}
+              >
+                {indent ? (
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      borderRadius: 100,
+                      padding: "2px 7px",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      background: "var(--blue-bg)",
+                      color: "var(--text2)",
+                      flexShrink: 0,
+                    }}
+                  >
+                    자재
+                  </span>
+                ) : null}
+                <span
+                  style={{
+                    fontWeight: 500,
+                    fontSize: "13px",
+                    color: "var(--text1)",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    maxWidth: "30ch",
+                  }}
+                >
+                  {m.name || "이름 없음"}
+                </span>
+                {m.form.partCode ? (
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      background: "var(--blue-bg)",
+                      border: "1px solid var(--border)",
+                      borderRadius: "3px",
+                      padding: "1px 5px",
+                      fontSize: "10px",
+                      color: "var(--text3)",
+                      fontWeight: 500,
+                      fontFamily: "monospace",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {m.form.partCode}
+                  </span>
+                ) : null}
+              </div>
+            )}
+          </td>
+          <td style={tdSpecR}>{specLabel}</td>
+          <td style={tdSpecR}>{specSubLabel}</td>
+          <td style={{ ...TD, textAlign: "right", verticalAlign: "middle" }}>
+            {m.form.edgePreset !== "none" ? (
               <span
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
-                  borderRadius: 100,
-                  padding: "2px 7px",
-                  fontSize: 11,
-                  fontWeight: 700,
-                  background: "#f0f2f5",
-                  color: "#4e5968",
-                  flexShrink: 0,
+                  background: "var(--blue-bg)",
+                  color: "var(--text2)",
+                  borderRadius: "100px",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  padding: "2px 8px",
                 }}
               >
-                자재
+                {fullEdgeLabel(m.form)}
               </span>
-            ) : null}
-            <span style={{ fontWeight: 500, fontSize: "13px", color: "#191f28", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "30ch" }}>
-              {m.name || "이름 없음"}
-            </span>
-            {m.form.partCode ? (
-              <span style={{ display: "inline-flex", background: "#f0f2f5", border: "1px solid #e8ecf2", borderRadius: "3px", padding: "1px 5px", fontSize: "10px", color: "#8b95a1", fontWeight: 500, fontFamily: "monospace", flexShrink: 0 }}>
-                {m.form.partCode}
-              </span>
-            ) : null}
-          </div>
-        )}
-      </td>
-      <td style={tdSpecR}>{specLabel}</td>
-      <td style={tdSpecR}>{specSubLabel}</td>
-      <td style={{ ...TD, textAlign: "right", verticalAlign: "middle" }}>
-        {m.form.edgePreset !== "none" ? (
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              background: "#ebf3fe",
-              color: "#185FA5",
-              borderRadius: "100px",
-              fontSize: "11px",
-              fontWeight: 600,
-              padding: "2px 8px",
-            }}
-          >
-            {fullEdgeLabel(m.form)}
-          </span>
-        ) : (
-          <span style={{ ...TD_SPEC, fontSize: "12px" }}>없음</span>
-        )}
-      </td>
-      <td style={tdSpecR}>{sheetLabel}</td>
-      <td style={{ ...TD, textAlign: "right", fontSize: "13px", fontWeight: 700, color: matWon > 0 ? "#3182f6" : "#8b95a1" }}>{matWon > 0 ? formatWonKorean(matWon) : "—"}</td>
-      <td style={{ ...TD, textAlign: "right", fontSize: "13px", fontWeight: 700, color: procWon > 0 ? "#3182f6" : "#8b95a1" }}>{procWon > 0 ? formatWonKorean(procWon) : "—"}</td>
-      <td style={{ ...TD, textAlign: "right", fontSize: "13px", fontWeight: 700, color: "#3182f6" }}>{formatWonKorean(total)}</td>
+            ) : (
+              <span style={{ ...TD_SPEC, fontSize: "12px" }}>없음</span>
+            )}
+          </td>
+          <td style={tdSpecR}>{sheetLabel}</td>
+        </>
+      )}
+      <td style={{ ...TD, textAlign: "right", fontSize: "13px", fontWeight: 700, color: matWon > 0 ? "var(--blue)" : "var(--text3)" }}>{matWon > 0 ? formatWonKorean(matWon) : "—"}</td>
+      <td style={{ ...TD, textAlign: "right", fontSize: "13px", fontWeight: 700, color: procWon > 0 ? "var(--blue)" : "var(--text3)" }}>{procWon > 0 ? formatWonKorean(procWon) : "—"}</td>
+      <td style={{ ...TD, textAlign: "right", fontSize: "13px", fontWeight: 700, color: "var(--blue)" }}>{formatWonKorean(total)}</td>
       <td style={{ ...TD, position: "relative" }} onClick={(e) => e.stopPropagation()}>
         <div style={{ position: "relative", display: "inline-block" }}>
           <button
             type="button"
-            style={{ width: "22px", height: "22px", border: "none", background: "none", cursor: "pointer", color: "#8b95a1", fontSize: "14px", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "4px" }}
+            style={{ width: "22px", height: "22px", border: "none", background: "none", cursor: "pointer", color: "var(--text3)", fontSize: "14px", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "4px" }}
             onClick={(e) => { e.stopPropagation(); onMoreMenu(m.id); }}
           >
             ···
@@ -1526,7 +1709,13 @@ function RowDetailPane({ materialId, indent, onSaved }: DetailProps) {
 
   useEffect(() => {
     const m = getMaterial(materialId);
-    if (m) setForm(m.form);
+    if (m)
+      setForm({
+        ...m.form,
+        cutOrientation: m.form.cutOrientation ?? "default",
+        showDefault: m.form.showDefault !== false,
+        showRotated: m.form.showRotated !== false,
+      });
   }, [materialId]);
 
   const comp = useMemo<ComputedMaterial | null>(() => {
@@ -1534,6 +1723,7 @@ function RowDetailPane({ materialId, indent, onSaved }: DetailProps) {
     const input = buildMaterialInput({
       ...form,
       sheetPrices: form.sheetPrices as Partial<Record<SheetId, number>>,
+      placementMode: effectiveYieldPlacementMode(form.placementMode, form.cutOrientation ?? "default"),
     });
     return computeMaterial(input, (form.selectedSheetId ?? null) as SheetId | null);
   }, [form]);
@@ -1554,6 +1744,10 @@ function RowDetailPane({ materialId, indent, onSaved }: DetailProps) {
           const inp = buildMaterialInput({
             ...next,
             sheetPrices: next.sheetPrices as Partial<Record<SheetId, number>>,
+            placementMode: effectiveYieldPlacementMode(
+              next.placementMode,
+              next.cutOrientation ?? "default"
+            ),
           });
           const c = computeMaterial(inp, (next.selectedSheetId ?? null) as SheetId | null);
           putMaterial({
@@ -1591,6 +1785,10 @@ function RowDetailPane({ materialId, indent, onSaved }: DetailProps) {
           const inp = buildMaterialInput({
             ...next,
             sheetPrices: next.sheetPrices as Partial<Record<SheetId, number>>,
+            placementMode: effectiveYieldPlacementMode(
+              next.placementMode,
+              next.cutOrientation ?? "default"
+            ),
           });
           const c = computeMaterial(inp, (next.selectedSheetId ?? null) as SheetId | null);
           putMaterial({
@@ -1717,11 +1915,30 @@ function RowDetailPane({ materialId, indent, onSaved }: DetailProps) {
                 pieceWMm={form.wMm}
                 pieceDMm={form.dMm}
                 placementMode={form.placementMode}
-                onPlacementModeChange={(m) => updateMany({ placementMode: m })}
+                cutOrientation={form.cutOrientation}
+                onPlacementModeChange={(m) => {
+                  if (m !== "mixed") return;
+                  return void updateMany({ placementMode: m, showDefault: false, showRotated: false });
+                }}
                 selectedSheetId={form.selectedSheetId}
                 computedSelectedId={comp.selectedSheetId}
                 recommendedSheetId={comp.recommendedSheetId}
-                onSelectSheetOriented={(id, o) => updateMany({ selectedSheetId: id, placementMode: o })}
+                showDefault={form.showDefault !== false}
+                showRotated={form.showRotated !== false}
+                onToggleRow={(row) => {
+                  if (form.placementMode === "mixed") {
+                    return void updateMany({ placementMode: "default", showDefault: true, showRotated: true });
+                  }
+                  if (row === "default") {
+                    const next = !(form.showDefault !== false);
+                    if (!next && !(form.showRotated !== false)) return;
+                    return void updateMany({ showDefault: next });
+                  }
+                  const next = !(form.showRotated !== false);
+                  if (!next && !(form.showDefault !== false)) return;
+                  return void updateMany({ showRotated: next });
+                }}
+                onSelectSheetOriented={(id, o) => updateMany({ selectedSheetId: id, cutOrientation: o })}
                 onSelectSheet={(id) => updateMany({ selectedSheetId: id })}
                 unavailableSheetIds={sheetStripProps.unavailableSheetIds}
                 unitPriceBySheetId={sheetStripProps.unitPriceBySheetId}
@@ -1950,19 +2167,41 @@ function UploadModal({
 }) {
   const [stpFile, setStpFile] = useState<File | null>(null);
   const [bomFile, setBomFile] = useState<File | null>(null);
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [stpDrag, setStpDrag] = useState(false);
   const [bomDrag, setBomDrag] = useState(false);
+  const [pdfDrag, setPdfDrag] = useState(false);
 
   const submit = async () => {
-    if (!stpFile && !bomFile) { setError("파일을 하나 이상 선택해주세요."); return; }
+    if (!stpFile && !bomFile && !pdfFile) {
+      setError("파일을 하나 이상 선택해주세요.");
+      return;
+    }
     setLoading(true);
     setError(null);
     onStartLoading(3);
     try {
-      if (stpFile) {
+      if (pdfFile && !stpFile) {
+        setProgress("도면 PDF 파싱 중...");
+        const fd = new FormData();
+        fd.append("file", pdfFile);
+        const res = await fetch(`${STP_API_URL}/api/parse/drawing-pdf`, { method: "POST", body: fd });
+        if (!res.ok) {
+          const msg = await res.text().catch(() => "");
+          throw new Error(`서버 오류 (${res.status})${msg ? `: ${msg.slice(0, 120)}` : ""}`);
+        }
+        const data = (await res.json()) as StpApiResponse;
+        if (!data.materials?.length) {
+          setError("PDF에서 자재 정보를 추출하지 못했습니다.");
+          setLoading(false);
+          onStartLoading(0);
+          return;
+        }
+        onParsed(data.materials);
+      } else if (stpFile) {
         setProgress("STP 파싱 중... (수십 초 소요될 수 있습니다)");
         const fd = new FormData();
         fd.append("file", stpFile);
@@ -2018,9 +2257,26 @@ function UploadModal({
           onDragEnter={(e) => { e.preventDefault(); setStpDrag(true); }}
           onDragLeave={() => setStpDrag(false)}
           onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => { e.preventDefault(); setStpDrag(false); const f = e.dataTransfer.files[0]; if (f) setStpFile(f); }}
+          onDrop={(e) => {
+            e.preventDefault();
+            setStpDrag(false);
+            const f = e.dataTransfer.files[0];
+            if (f) {
+              setStpFile(f);
+              setPdfFile(null);
+            }
+          }}
         >
-          <input type="file" accept=".zip" style={{ position: "absolute", inset: 0, opacity: 0, cursor: "pointer" }} onChange={(e) => setStpFile(e.target.files?.[0] ?? null)} />
+          <input
+            type="file"
+            accept=".zip"
+            style={{ position: "absolute", inset: 0, opacity: 0, cursor: "pointer" }}
+            onChange={(e) => {
+              const f = e.target.files?.[0] ?? null;
+              setStpFile(f);
+              if (f) setPdfFile(null);
+            }}
+          />
           <div style={{ fontSize: "22px", marginBottom: "6px" }}>{stpFile ? "✓" : "📦"}</div>
           <div style={{ fontSize: "13px", fontWeight: 600, color: stpFile ? "var(--green)" : "var(--text2)", marginBottom: "3px" }}>
             {stpFile ? stpFile.name : "STP ZIP 드래그 or 클릭"}
@@ -2029,11 +2285,16 @@ function UploadModal({
         </label>
 
         <label
-          style={{ ...dropZoneBase, marginBottom: "16px", borderColor: bomDrag ? "var(--blue)" : bomFile ? "var(--green)" : "var(--border2)", background: bomDrag ? "var(--blue-bg)" : bomFile ? "var(--green-bg)" : "var(--surface2)" }}
+          style={{ ...dropZoneBase, marginBottom: "12px", borderColor: bomDrag ? "var(--blue)" : bomFile ? "var(--green)" : "var(--border2)", background: bomDrag ? "var(--blue-bg)" : bomFile ? "var(--green-bg)" : "var(--surface2)" }}
           onDragEnter={(e) => { e.preventDefault(); setBomDrag(true); }}
           onDragLeave={() => setBomDrag(false)}
           onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => { e.preventDefault(); setBomDrag(false); const f = e.dataTransfer.files[0]; if (f) setBomFile(f); }}
+          onDrop={(e) => {
+            e.preventDefault();
+            setBomDrag(false);
+            const f = e.dataTransfer.files[0];
+            if (f) setBomFile(f);
+          }}
         >
           <input type="file" accept=".bom.3,.bom,.txt" style={{ position: "absolute", inset: 0, opacity: 0, cursor: "pointer" }} onChange={(e) => setBomFile(e.target.files?.[0] ?? null)} />
           <div style={{ fontSize: "22px", marginBottom: "6px" }}>{bomFile ? "✓" : "📄"}</div>
@@ -2043,10 +2304,54 @@ function UploadModal({
           <div style={{ fontSize: "11px", color: "var(--text3)" }}>.bom.3 파일 (Creo BOM)</div>
         </label>
 
+        <label
+          style={{
+            ...dropZoneBase,
+            marginBottom: "16px",
+            borderColor: pdfDrag ? "var(--blue)" : pdfFile ? "var(--green)" : "var(--border2)",
+            background: pdfDrag ? "var(--blue-bg)" : pdfFile ? "var(--green-bg)" : "var(--surface2)",
+          }}
+          onDragEnter={(e) => {
+            e.preventDefault();
+            setPdfDrag(true);
+          }}
+          onDragLeave={() => setPdfDrag(false)}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            setPdfDrag(false);
+            const f = e.dataTransfer.files[0];
+            if (f && f.name.toLowerCase().endsWith(".pdf")) {
+              setPdfFile(f);
+              setStpFile(null);
+            }
+          }}
+        >
+          <input
+            type="file"
+            accept=".pdf,application/pdf"
+            style={{ position: "absolute", inset: 0, opacity: 0, cursor: "pointer" }}
+            onChange={(e) => {
+              const f = e.target.files?.[0] ?? null;
+              if (f) {
+                setPdfFile(f);
+                setStpFile(null);
+              }
+            }}
+          />
+          <div style={{ fontSize: "22px", marginBottom: "6px" }}>{pdfFile ? "✓" : "📑"}</div>
+          <div style={{ fontSize: "13px", fontWeight: 600, color: pdfFile ? "var(--green)" : "var(--text2)", marginBottom: "3px" }}>
+            {pdfFile ? pdfFile.name : "도면 PDF 드래그 or 클릭"}
+          </div>
+          <div style={{ fontSize: "11px", color: "var(--text3)" }}>퍼시스 도면 PDF → 치수·소재·엣지·홀 자동 입력</div>
+        </label>
+
         <div style={{ fontSize: "11px", color: "var(--text3)", marginBottom: "16px", lineHeight: 1.6, background: "var(--surface2)", borderRadius: "6px", padding: "10px 12px" }}>
           ※ STP만 올리면 치수만 추출<br />
           ※ BOM 같이 올리면 이름도 자동 입력<br />
           ※ BOM만 올리면 이름/조립부품만 추출 (치수 없음)
+          <br />
+          ※ PDF만 올리면 도면 텍스트 파싱 후 자재 1건 추가 (STP와 동시 선택 불가)
         </div>
 
         {loading && (
@@ -2065,9 +2370,13 @@ function UploadModal({
         <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
           <button style={{ ...BTN_OUTLINE, padding: "9px 18px" }} onClick={onClose} disabled={loading}>취소</button>
           <button
-            style={{ ...BTN_PRIMARY, padding: "9px 18px", opacity: loading || (!stpFile && !bomFile) ? 0.6 : 1 }}
+            style={{
+              ...BTN_PRIMARY,
+              padding: "9px 18px",
+              opacity: loading || (!stpFile && !bomFile && !pdfFile) ? 0.6 : 1,
+            }}
             onClick={submit}
-            disabled={loading || (!stpFile && !bomFile)}
+            disabled={loading || (!stpFile && !bomFile && !pdfFile)}
           >
             {loading ? "처리 중..." : "업로드 시작"}
           </button>

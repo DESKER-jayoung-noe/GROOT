@@ -37,6 +37,9 @@ function draw(
   mode: DiagramMode
 ) {
   ctx.clearRect(0, 0, cssW, cssH);
+  /** 투명 영역이 부모(따뜻한 톤 배경 등)를 비추지 않도록 */
+  ctx.fillStyle = "#F0F0F0";
+  ctx.fillRect(0, 0, cssW, cssH);
 
   const { effW, effD } = effectiveSize(pieceWMm, pieceDMm);
   if (effW <= 0 || effD <= 0) return;

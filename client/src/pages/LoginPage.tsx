@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, ApiError } from "../api";
-import { useAuth } from "../auth";
+import { isServerAuthToken, useAuth } from "../auth";
 
 export function LoginPage() {
   const nav = useNavigate();
@@ -13,7 +13,7 @@ export function LoginPage() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (token) nav("/add", { replace: true });
+    if (isServerAuthToken(token)) nav("/material", { replace: true });
   }, [token, nav]);
 
   async function submit() {

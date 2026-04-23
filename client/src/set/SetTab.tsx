@@ -1,18 +1,4 @@
-import {
-  forwardRef,
-  startTransition,
-  useCallback,
-  useDeferredValue,
-  useEffect,
-  useImperativeHandle,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import { api, ApiError } from "../api";
-import { getSets } from "../offline/stores";
-import { useAuth } from "../auth";
-import { formatWonKorean } from "../util/format";
+import { forwardRef, useImperativeHandle, useMemo, useState } from "react";
 
 export type SetTabHandle = {
   saveDraft: () => Promise<void>;
@@ -20,29 +6,142 @@ export type SetTabHandle = {
   loadFromVault: (id: string) => Promise<void>;
 };
 
-type SetComputed = {
-  items: { productId: string; name: string; grandTotalWon: number; materialNames: string[] }[];
-  grandTotalWon: number;
-};
-
-type FormState = {
-  name: string;
-  productIds: string[];
-};
-
-type ProdRow = {
+type Status = "done" | "progress" | "wait";
+type Item = {
   id: string;
   name: string;
-  grandTotalWon: number;
-  summary: string;
+  spec: string;
+  vendor: string;
+  status: Status;
+  memo: string;
+  mat: number;
+  edge: number;
+  hotmelt: number;
+  proc_cut: number;
+  proc_edge: number;
+  proc_bore: number;
+  wash: number;
+  hw: number;
+  bag: number;
+  nk: number;
+  tape: number;
+  sticker: number;
 };
 
-function defaultForm(): FormState {
-  return {
-    name: "1200폭 멀티책상세트",
-    productIds: [],
-  };
+type Extra = { id: string; name: string; vendor: string; price: string; memo: string };
+
+const INITIAL_ITEMS: Item[] = [
+  {
+    id: "item-0",
+    name: "뒷판 A",
+    spec: "1169×550×15T · PB",
+    vendor: "가나목재",
+    status: "done",
+    memo: "",
+    mat: 6830,
+    edge: 492,
+    hotmelt: 292,
+    proc_cut: 800,
+    proc_edge: 784,
+    proc_bore: 0,
+    wash: 320,
+    hw: 252,
+    bag: 1000,
+    nk: 1000,
+    tape: 43,
+    sticker: 6,
+  },
+  {
+    id: "item-1",
+    name: "측판 L",
+    spec: "550×720×18T · PB",
+    vendor: "가나목재",
+    status: "done",
+    memo: "",
+    mat: 7200,
+    edge: 540,
+    hotmelt: 310,
+    proc_cut: 900,
+    proc_edge: 820,
+    proc_bore: 62,
+    wash: 198,
+    hw: 0,
+    bag: 0,
+    nk: 1000,
+    tape: 43,
+    sticker: 6,
+  },
+  {
+    id: "item-2",
+    name: "측판 R",
+    spec: "550×720×18T · PB",
+    vendor: "가나목재",
+    status: "done",
+    memo: "",
+    mat: 7200,
+    edge: 540,
+    hotmelt: 310,
+    proc_cut: 900,
+    proc_edge: 820,
+    proc_bore: 62,
+    wash: 198,
+    hw: 0,
+    bag: 0,
+    nk: 1000,
+    tape: 43,
+    sticker: 6,
+  },
+  {
+    id: "item-3",
+    name: "상판",
+    spec: "1200×600×18T · PB",
+    vendor: "가나목재",
+    status: "progress",
+    memo: "6/30 납기 예정",
+    mat: 9600,
+    edge: 680,
+    hotmelt: 380,
+    proc_cut: 1100,
+    proc_edge: 900,
+    proc_bore: 0,
+    wash: 360,
+    hw: 0,
+    bag: 0,
+    nk: 1000,
+    tape: 43,
+    sticker: 6,
+  },
+  {
+    id: "item-4",
+    name: "하판",
+    spec: "1163×550×18T · PB",
+    vendor: "가나목재",
+    status: "wait",
+    memo: "",
+    mat: 6500,
+    edge: 480,
+    hotmelt: 280,
+    proc_cut: 780,
+    proc_edge: 760,
+    proc_bore: 0,
+    wash: 320,
+    hw: 0,
+    bag: 0,
+    nk: 1000,
+    tape: 43,
+    sticker: 6,
+  },
+];
+
+function calc(d: Item) {
+  const mat = d.mat + d.edge + d.hotmelt;
+  const proc = d.proc_cut + d.proc_edge + d.proc_bore;
+  const pack = d.wash + d.hw + d.bag + d.nk + d.tape + d.sticker;
+  const base = mat + proc + pack;
+  const ov = Math.ceil((base * 0.05) / 100) * 100;
+  return { mat, proc, pack, ov, total: base + ov };
 }
+
 
 export const SetTab = forwardRef<
   SetTabHandle,
@@ -53,391 +152,181 @@ export const SetTab = forwardRef<
     onQuoteEntityRebind?: (entityId: string) => void;
     stripRenameEpoch?: number;
   }
->(function SetTab({ active = true, quoteBindEntityId, onQuoteMeta, onQuoteEntityRebind, stripRenameEpoch = 0 }, ref) {
-  const { token } = useAuth();
-  const [form, setForm] = useState<FormState>(defaultForm);
-  const [computed, setComputed] = useState<SetComputed | null>(null);
-  const [library, setLibrary] = useState<ProdRow[]>([]);
-  const [savedSets, setSavedSets] = useState<
-    { id: string; name: string; updatedAt: string; grandTotalWon: number; summary: string }[]
-  >([]);
-  const [libSearch, setLibSearch] = useState("");
-  const [setSearch, setSetSearch] = useState("");
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [dragOver, setDragOver] = useState(false);
-  const onQuoteEntityRebindRef = useRef(onQuoteEntityRebind);
-  onQuoteEntityRebindRef.current = onQuoteEntityRebind;
+>(function SetTab({ active = true, onQuoteMeta }, ref) {
+  const [items] = useState<Item[]>(INITIAL_ITEMS);
+  const [extras] = useState<Extra[]>([]);
+  const [drawerItem, setDrawerItem] = useState<string | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [extraRows, setExtraRows] = useState<{ id: string; name: string; vendor: string; price: string; memo: string }[]>([]);
 
-  const saveBody = useMemo(() => ({ ...form }), [form]);
+  const extraTotal = useMemo(() => extras.reduce((s, e) => s + (Number.parseInt(e.price, 10) || 0), 0), [extras]);
+  const woodTotal = useMemo(() => items.reduce((s, it) => s + calc(it).total, 0), [items]);
+  const total = woodTotal + extraTotal;
 
-  const previewPayload = useMemo(() => ({ productIds: form.productIds }), [form.productIds]);
-
-  const previewKey = useMemo(() => JSON.stringify({ ...previewPayload, name: "" }), [previewPayload]);
-  const deferredPreviewKey = useDeferredValue(previewKey);
-
-  const refreshLibrary = useCallback(async () => {
-    if (!token) return;
-    const rows = await api<ProdRow[]>("/products/list?status=SAVED", { token });
-    setLibrary(rows);
-  }, [token]);
-
-  const refreshSavedSets = useCallback(async () => {
-    if (!token) return;
-    const rows = await api<
-      { id: string; name: string; updatedAt: string; grandTotalWon: number; summary: string }[]
-    >("/sets/list?status=SAVED", { token });
-    setSavedSets(rows);
-  }, [token]);
-
-  useEffect(() => {
-    if (!active) return;
-    void refreshLibrary();
-    void refreshSavedSets();
-  }, [active, refreshLibrary, refreshSavedSets]);
-
-  useEffect(() => {
-    if (!active || !token) return;
-    let cancelled = false;
-    const ac = new AbortController();
-    const t = window.setTimeout(() => {
-      api<{ computed: SetComputed }>("/sets/preview", {
-        method: "POST",
-        body: deferredPreviewKey,
-        token,
-        signal: ac.signal,
-      })
-        .then((r) => {
-          if (!cancelled) startTransition(() => setComputed(r.computed));
-        })
-        .catch((e: unknown) => {
-          if ((e as { name?: string })?.name === "AbortError") return;
-          if (!cancelled) startTransition(() => setComputed(null));
-        });
-    }, 480);
-    return () => {
-      cancelled = true;
-      ac.abort();
-      window.clearTimeout(t);
-    };
-  }, [active, token, deferredPreviewKey]);
-
-  const addProduct = useCallback((productId: string) => {
-    setForm((f) => ({ ...f, productIds: [...f.productIds, productId] }));
-  }, []);
-
-  const removeAt = useCallback((index: number) => {
-    setForm((f) => ({
-      ...f,
-      productIds: f.productIds.filter((_, i) => i !== index),
-    }));
-  }, []);
-
-  const onSaveRef = useRef<(draft: boolean, silent?: boolean) => Promise<void>>(async () => {});
-
-  const onSave = useCallback(
-    async (draft: boolean, silent?: boolean) => {
-      if (!silent) setMsg(null);
-      if (!token) return;
-      try {
-        if (editingId) {
-          await api(`/sets/${editingId}`, { method: "PUT", body: JSON.stringify(saveBody), token });
-          if (!silent) setMsg(draft ? "임시저장되었습니다." : "저장되었습니다.");
-        } else {
-          const path = draft ? "/sets/draft" : "/sets/save";
-          const res = await api<{ id: string }>(path, {
-            method: "POST",
-            body: JSON.stringify(saveBody),
-            token,
-          });
-          setEditingId(res.id);
-          onQuoteEntityRebindRef.current?.(res.id);
-          if (!silent) setMsg(draft ? "임시저장되었습니다." : "보관함에 저장되었습니다.");
-        }
-        void refreshLibrary();
-        void refreshSavedSets();
-      } catch (e) {
-        if (!silent) setMsg(e instanceof ApiError ? e.message : "저장에 실패했습니다.");
-      }
-    },
-    [token, saveBody, editingId, refreshLibrary, refreshSavedSets]
-  );
-
-  onSaveRef.current = onSave;
-
-  const loadSet = useCallback(
-    async (id: string) => {
-      if (!token) return;
-      const row = await api<{ name: string; form: FormState; computed: SetComputed }>(`/sets/${id}`, { token });
-      setForm({ ...row.form, name: row.name });
-      setComputed(row.computed);
-      setEditingId(id);
-      onQuoteEntityRebindRef.current?.(id);
-    },
-    [token]
-  );
+  useMemo(() => {
+    onQuoteMeta?.({ name: "세트 견적 대시보드", grandTotalWon: total });
+  }, [onQuoteMeta, total]);
 
   useImperativeHandle(
     ref,
     () => ({
-      saveDraft: () => onSave(true),
-      save: () => onSave(false),
-      loadFromVault: (id: string) => loadSet(id),
+      saveDraft: async () => undefined,
+      save: async () => undefined,
+      loadFromVault: async () => undefined,
     }),
-    [onSave, loadSet]
+    []
   );
 
-  useEffect(() => {
-    if (!active || !quoteBindEntityId || !token) return;
-    void loadSet(quoteBindEntityId);
-  }, [active, quoteBindEntityId, token, loadSet]);
+  if (!active) return null;
 
-  useEffect(() => {
-    if (!stripRenameEpoch || !quoteBindEntityId || !active) return;
-    const s = getSets().find((x) => x.id === quoteBindEntityId);
-    if (!s) return;
-    setForm((f) => ({ ...f, name: s.name }));
-  }, [stripRenameEpoch, quoteBindEntityId, active]);
-
-  const quoteMode = Boolean(quoteBindEntityId);
-
-  useEffect(() => {
-    if (!quoteMode) return;
-    return () => {
-      void onSaveRef.current(true, true);
-    };
-  }, [quoteMode]);
-
-  const autoSaveKey = useMemo(() => JSON.stringify(saveBody) + String(editingId), [saveBody, editingId]);
-
-  useEffect(() => {
-    if (!active) return;
-    if (quoteBindEntityId && editingId !== quoteBindEntityId) return;
-    const tid = window.setTimeout(() => {
-      void onSave(true, true);
-    }, 1600);
-    return () => clearTimeout(tid);
-  }, [active, autoSaveKey, editingId, quoteBindEntityId, onSave]);
-
-  useEffect(() => {
-    if (!quoteBindEntityId || !active) return;
-    if (editingId !== quoteBindEntityId) return;
-    onQuoteMeta?.({
-      name: form.name?.trim() || "이름 없음",
-      grandTotalWon: computed?.grandTotalWon ?? 0,
-    });
-  }, [quoteBindEntityId, active, editingId, form.name, computed?.grandTotalWon, onQuoteMeta]);
-
-  async function onCopySet(id: string) {
-    if (!token) return;
-    const res = await api<{ id: string; name: string }>(`/sets/${id}/copy`, { method: "POST", token });
-    await loadSet(res.id);
-    setMsg(`복사됨: ${res.name}`);
-    void refreshSavedSets();
-  }
-
-  const filteredLib = useMemo(() => {
-    const q = libSearch.toLowerCase();
-    return library.filter((p) => p.name.toLowerCase().includes(q));
-  }, [library, libSearch]);
-
-  const filteredSets = useMemo(() => {
-    const q = setSearch.toLowerCase();
-    return savedSets.filter((s) => s.name.toLowerCase().includes(q));
-  }, [savedSets, setSearch]);
-
-  const onDragStartLib = (e: React.DragEvent, productId: string) => {
-    e.dataTransfer.setData("productId", productId);
-    e.dataTransfer.effectAllowed = "copy";
+  const calcItem = (d: Item) => {
+    const base = d.mat+d.edge+d.hotmelt+d.proc_cut+d.proc_edge+d.proc_bore+d.wash+d.hw+d.bag+d.nk+d.tape+d.sticker;
+    const ov = Math.ceil(base*0.05/100)*100;
+    return {mat:d.mat+d.edge+d.hotmelt, proc:d.proc_cut+d.proc_edge+d.proc_bore, pack:d.wash+d.hw+d.bag+d.nk+d.tape+d.sticker, ov, total:base+ov};
   };
-
-  const onDropMain = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    const id = e.dataTransfer.getData("productId");
-    if (id) addProduct(id);
-  };
-
-  const toggleExpand = (key: string) => {
-    setExpanded((s) => ({ ...s, [key]: !s[key] }));
-  };
+  const STATUS_LABEL: Record<string,string> = {done:'완료',progress:'진행중',wait:'대기'};
+  const STATUS_CLS: Record<string,string> = {done:'bd-done',progress:'bd-prog',wait:'bd-wait'};
+  const extraRowsTotal = extraRows.reduce((s,e)=>s+(parseInt(e.price)||0),0);
+  const itemsTotal = items.reduce((s,d)=>s+calcItem(d).total,0);
+  const woodItemsTotal = items.reduce((s,d)=>s+(calcItem(d).mat+calcItem(d).proc),0);
+  const packTotal = items.reduce((s,d)=>s+calcItem(d).pack,0);
+  const grandTotal = itemsTotal + extraRowsTotal;
 
   return (
-    <div className="flex flex-col lg:flex-row h-full min-h-0 bg-[#f8f9fa]">
-      <div className="flex-1 min-w-0 overflow-auto px-5 py-6 lg:px-8">
-        <div className="max-w-3xl mx-auto lg:mx-0 space-y-6">
-          <div className="rounded-2xl bg-white border border-[#e0e0e0] shadow-sm overflow-hidden">
-            <div className="flex flex-wrap items-end justify-between gap-4 px-6 pt-6 pb-4 border-b border-[#f0f0f0]">
-              <input
-                className="text-lg font-bold text-[#111] bg-transparent border-none outline-none flex-1 min-w-0"
-                value={form.name}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                placeholder="세트명"
-              />
-              <div className="text-right shrink-0">
-                <span className="text-sm text-slate-500">예상 : </span>
-                <span className="text-lg font-bold text-[#1e6fff] tabular-nums">
-                  {computed ? formatWonKorean(computed.grandTotalWon) : "—"}
-                </span>
-              </div>
+    <>
+      <div className="page active" style={{display:'flex'}}>
+        <div className="set-body">
+          {/* Summary cards */}
+          <div className="dash-grid">
+            <div className="dash-card">
+              <div className="dc-label">공장판매가 합계</div>
+              <div className="dc-value">{grandTotal.toLocaleString()}원</div>
+              <div className="dc-sub">단품 {items.length}개 + 기타 {extraRows.length}개</div>
             </div>
-
-            <div className="px-6 py-6">
-              <div
-                className={`min-h-[200px] rounded-2xl border-2 border-dashed p-4 transition-colors ${
-                  dragOver ? "border-[#1e6fff] bg-[#1e6fff]/5" : "border-[#cfe2ff] bg-[#f8fbff]"
-                }`}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  setDragOver(true);
-                }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={onDropMain}
-              >
-                <p className="text-xs text-slate-500 mb-3">단품을 끌어다 놓거나 오른쪽에서 추가하세요.</p>
-                <div className="space-y-3">
-                  {computed?.items.map((item, i) => {
-                    const key = `${item.productId}-${i}`;
-                    const open = expanded[key] ?? true;
-                    return (
-                      <div key={key} className="rounded-xl border-2 border-[#bfdbfe] bg-white p-4 shadow-sm">
-                        <div className="flex justify-between gap-3 items-start">
-                          <div className="min-w-0 flex-1">
-                            <div className="font-bold text-[#111]">{item.name}</div>
-                            <button
-                              type="button"
-                              className="text-xs text-[#1e6fff] mt-1 font-medium"
-                              onClick={() => toggleExpand(key)}
-                            >
-                              {open ? "▼ 하위 자재 접기" : "▶ 하위 자재 펼치기"}
-                            </button>
-                            {open && item.materialNames.length > 0 && (
-                              <ul className="mt-2 text-sm text-slate-600 list-disc pl-5 space-y-0.5">
-                                {item.materialNames.map((n, j) => (
-                                  <li key={j}>{n}</li>
-                                ))}
-                              </ul>
-                            )}
-                          </div>
-                          <div className="text-right shrink-0">
-                            <div className="text-[#1e6fff] font-bold tabular-nums">{formatWonKorean(item.grandTotalWon)}</div>
-                            <button type="button" className="text-xs text-red-500 mt-2 hover:underline" onClick={() => removeAt(i)}>
-                              제거
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {(!computed || computed.items.length === 0) && (
-                    <div className="text-center text-slate-400 text-sm py-12">추가된 단품이 없습니다</div>
-                  )}
-                </div>
-              </div>
+            <div className="dash-card">
+              <div className="dc-label">목재 단품 소계</div>
+              <div className="dc-value">{woodItemsTotal.toLocaleString()}원</div>
+              <div className="dc-sub">자재비 + 가공비 {grandTotal?`· ${Math.round(woodItemsTotal/grandTotal*100)}%`:''}</div>
+            </div>
+            <div className="dash-card">
+              <div className="dc-label">포장비 소계</div>
+              <div className="dc-value">{packTotal.toLocaleString()}원</div>
+              <div className="dc-sub">세척·철물·박스 {grandTotal?`· ${Math.round(packTotal/grandTotal*100)}%`:''}</div>
+            </div>
+            <div className="dash-card">
+              <div className="dc-label">기타 항목 소계</div>
+              <div className="dc-value">{extraRowsTotal.toLocaleString()}원</div>
+              <div className="dc-sub">{extraRows.length?extraRows.length+'개 항목':'아직 없음'}</div>
             </div>
           </div>
 
-          {msg && <p className="text-sm text-slate-600">{msg}</p>}
-
-          <details className="rounded-2xl border border-[#e0e0e0] bg-white p-4">
-            <summary className="cursor-pointer text-sm font-bold text-[#111]">저장된 세트 불러오기</summary>
-            <div className="mt-3 space-y-2">
-              <div className="relative">
-                <input
-                  placeholder="검색"
-                  className="w-full rounded-xl border border-[#e0e0e0] bg-[#f8f9fa] pl-3 pr-9 py-2 text-sm"
-                  value={setSearch}
-                  onChange={(e) => setSetSearch(e.target.value)}
-                />
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs">🔍</span>
-              </div>
-              <div className="space-y-2 max-h-56 overflow-auto">
-                {filteredSets.map((s) => (
-                  <div
-                    key={s.id}
-                    className={`rounded-xl border-2 p-3 text-sm ${editingId === s.id ? "border-[#1e6fff] bg-[#f8fbff]" : "border-[#e8e8e8]"}`}
-                  >
-                    <div className="font-semibold text-[#111]">{s.name}</div>
-                    <div className="text-[#1e6fff] font-bold tabular-nums">{formatWonKorean(s.grandTotalWon)}</div>
-                    <div className="flex gap-2 mt-2">
-                      <button
-                        type="button"
-                        className="text-xs rounded-lg border border-[#e0e0e0] px-2 py-1 hover:bg-slate-50"
-                        onClick={() => void onCopySet(s.id)}
-                      >
-                        복사
-                      </button>
-                      <button
-                        type="button"
-                        className="text-xs rounded-lg border border-[#e0e0e0] px-2 py-1 hover:bg-slate-50"
-                        onClick={() => void loadSet(s.id)}
-                      >
-                        수정
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
+          {/* Items table */}
+          <div className="sc">
+            <div className="sc-head">
+              <div className="sc-title">목재 단품<span className="sc-count">{items.length}개</span></div>
             </div>
-          </details>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th style={{width:3,padding:0}} />
+                  <th>항목명</th><th>업체</th><th>납기 상태</th><th>메모</th><th className="r">공장판매가</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map(d=>{
+                  const c = calcItem(d);
+                  return (
+                    <tr key={d.id} onClick={()=>{setDrawerItem(d.id);setDrawerOpen(true);}}>
+                      <td className={`td-status-bar td-status-bar--${d.status}`} />
+                      <td><div className="td-name">{d.name}</div><div className="td-sub">{d.spec}</div></td>
+                      <td><span className="td-vtag">{d.vendor}</span></td>
+                      <td style={{textAlign:'center'}}><span className={`bd ${STATUS_CLS[d.status]}`}>{STATUS_LABEL[d.status]}</span></td>
+                      <td style={{fontSize:'10px',color:'#aaa'}}>{d.memo||'—'}</td>
+                      <td className="td-price">{c.total.toLocaleString()}원</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
 
-          <button
-            type="button"
-            className="text-sm text-slate-500 underline underline-offset-2 hover:text-[#1e6fff]"
-            onClick={() => {
-              setForm(defaultForm());
-              setEditingId(null);
-              setMsg(null);
-              setExpanded({});
-            }}
-          >
-            새 세트
-          </button>
+          {/* Extra items */}
+          <div className="sc">
+            <div className="sc-head">
+              <div className="sc-title">기타 항목<span className="sc-count">{extraRows.length}개</span></div>
+              <button className="sc-add" onClick={()=>setExtraRows(r=>[...r,{id:String(Date.now()),name:'',vendor:'',price:'',memo:''}])}>
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M5 1v8M1 5h8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+                항목 추가
+              </button>
+            </div>
+            {extraRows.length>0 && (
+              <div style={{display:'flex',gap:'8px',padding:'6px 16px',background:'#fafafa',borderBottom:'1px solid #f0f0f0',fontSize:'10px',color:'#aaa',fontWeight:'600'}}>
+                <div style={{flex:2}}>항목명</div><div style={{flex:1.2}}>업체</div><div style={{flex:1,textAlign:'right'}}>금액</div><div style={{flex:1.5}}>메모</div><div style={{width:'24px'}} />
+              </div>
+            )}
+            {extraRows.map(e=>(
+              <div key={e.id} className="ex-row">
+                <input className="ei ei-name" placeholder="항목명" value={e.name} onChange={ev=>setExtraRows(r=>r.map(x=>x.id===e.id?{...x,name:ev.target.value}:x))} />
+                <input className="ei ei-vendor" placeholder="업체" value={e.vendor} onChange={ev=>setExtraRows(r=>r.map(x=>x.id===e.id?{...x,vendor:ev.target.value}:x))} />
+                <input className="ei ei-price" placeholder="0" type="number" value={e.price} onChange={ev=>setExtraRows(r=>r.map(x=>x.id===e.id?{...x,price:ev.target.value}:x))} />
+                <input className="ei ei-memo" placeholder="메모" value={e.memo} onChange={ev=>setExtraRows(r=>r.map(x=>x.id===e.id?{...x,memo:ev.target.value}:x))} />
+                <button className="ei-del" onClick={()=>setExtraRows(r=>r.filter(x=>x.id!==e.id))}>×</button>
+              </div>
+            ))}
+            {extraRows.length===0 && <div className="ex-empty">+ 항목 추가 버튼으로 멀티탭, 경첩 등 기타 항목을 추가하세요</div>}
+          </div>
         </div>
       </div>
 
-      <aside className="w-full lg:w-[300px] shrink-0 border-t lg:border-t-0 lg:border-l border-[#e0e0e0] bg-white flex flex-col min-h-[280px] lg:min-h-0 max-h-[55vh] lg:max-h-none">
-        <div className="p-4 border-b border-[#f0f0f0]">
-          <h2 className="text-base font-bold text-[#111] mb-3">저장된 단품 목록</h2>
-          <div className="relative">
-            <input
-              placeholder="검색"
-              className="w-full rounded-xl border border-[#e0e0e0] bg-[#f8f9fa] pl-3 pr-10 py-2.5 text-sm"
-              value={libSearch}
-              onChange={(e) => setLibSearch(e.target.value)}
-            />
-            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">🔍</span>
-          </div>
-        </div>
-        <div className="flex-1 overflow-auto p-4 space-y-3">
-          {filteredLib.map((p) => (
-            <div
-              key={p.id}
-              draggable
-              onDragStart={(e) => onDragStartLib(e, p.id)}
-              className="rounded-xl border border-[#e0e0e0] bg-white p-3 cursor-grab active:cursor-grabbing"
-            >
-              <div className="flex justify-between gap-2">
-                <span className="font-semibold text-sm text-[#111] line-clamp-2">{p.name}</span>
-                <span className="text-[#1e6fff] font-bold text-sm shrink-0 tabular-nums">{formatWonKorean(p.grandTotalWon)}</span>
+      {/* Drawer overlay */}
+      <div className={`desker-overlay${drawerOpen?' open':''}`} onClick={()=>setDrawerOpen(false)} />
+      <div className={`desker-drawer${drawerOpen?' open':''}`}>
+        {drawerOpen && drawerItem && (() => {
+          const d = items.find(x=>x.id===drawerItem);
+          if(!d) return null;
+          const c = calcItem(d);
+          return (
+            <>
+              <div className="dr-head">
+                <div className="dr-title">{d.name}</div>
+                <button className="dr-close" onClick={()=>setDrawerOpen(false)}>×</button>
               </div>
-              <p className="text-[11px] text-slate-500 mt-2 line-clamp-2">{p.summary}</p>
-              <button
-                type="button"
-                className="mt-2 w-full rounded-lg bg-[#1e6fff] py-1.5 text-xs font-semibold text-white"
-                onClick={() => addProduct(p.id)}
-              >
-                세트에 추가하기
-              </button>
-            </div>
-          ))}
-          {filteredLib.length === 0 && <div className="text-center text-sm text-slate-400 py-8">저장된 단품이 없습니다</div>}
-          {Array.from({ length: Math.max(0, 3 - filteredLib.length) }).map((_, i) => (
-            <div key={`ph-${i}`} className="h-20 rounded-xl border-2 border-dashed border-[#ececec] bg-[#f8f9fa]" />
-          ))}
-        </div>
-      </aside>
-    </div>
+              <div className="dr-body">
+                <div className="dr-meta">
+                  <div className="dr-mi"><div className="dr-mi-lbl">규격</div><div className="dr-mi-val">{d.spec}</div></div>
+                  <div className="dr-mi"><div className="dr-mi-lbl">업체</div><div className="dr-mi-val">{d.vendor}</div></div>
+                  <div className="dr-mi"><div className="dr-mi-lbl">납기 상태</div><div className="dr-mi-val">{STATUS_LABEL[d.status]}</div></div>
+                  <div className="dr-mi"><div className="dr-mi-lbl">메모</div><div className="dr-mi-val">{d.memo||'—'}</div></div>
+                </div>
+                <div className="dr-sec">원재료비</div>
+                <div className="dr-row"><span className="l">목재 원재료비</span><span className="r">{d.mat.toLocaleString()}원</span></div>
+                <div className="dr-row"><span className="l">엣지 원재료비</span><span className="r">{d.edge.toLocaleString()}원</span></div>
+                <div className="dr-row"><span className="l">핫멜트</span><span className="r">{d.hotmelt.toLocaleString()}원</span></div>
+                <div className="dr-sub"><span>자재비 소계</span><span>{c.mat.toLocaleString()}원</span></div>
+                <div className="dr-sec">가공비</div>
+                <div className="dr-row"><span className="l">재단</span><span className="r">{d.proc_cut.toLocaleString()}원</span></div>
+                <div className="dr-row"><span className="l">엣지 접착</span><span className="r">{d.proc_edge.toLocaleString()}원</span></div>
+                <div className="dr-row"><span className="l">보링류</span><span className="r">{d.proc_bore.toLocaleString()}원</span></div>
+                <div className="dr-sub"><span>가공비 소계</span><span>{c.proc.toLocaleString()}원</span></div>
+                <div className="dr-sec">포장비</div>
+                <div className="dr-row"><span className="l">세척비</span><span className="r">{d.wash.toLocaleString()}원</span></div>
+                <div className="dr-row"><span className="l">철물 포장비</span><span className="r">{d.hw.toLocaleString()}원</span></div>
+                <div className="dr-row"><span className="l">비닐 묶음</span><span className="r">{d.bag.toLocaleString()}원</span></div>
+                <div className="dr-row"><span className="l">뽁뽁이 포장</span><span className="r">{d.nk.toLocaleString()}원</span></div>
+                <div className="dr-row"><span className="l">테이프</span><span className="r">{d.tape.toLocaleString()}원</span></div>
+                <div className="dr-row"><span className="l">스티커</span><span className="r">{d.sticker.toLocaleString()}원</span></div>
+                <div className="dr-sub"><span>포장비 소계</span><span>{c.pack.toLocaleString()}원</span></div>
+                <div className="dr-sec">일반관리비</div>
+                <div className="dr-row"><span className="l">관리비 (×5%)</span><span className="r">{c.ov.toLocaleString()}원</span></div>
+                <div className="dr-sub"><span>관리비</span><span>{c.ov.toLocaleString()}원</span></div>
+                <div className="dr-div" />
+                <div className="dr-total"><span>공장판매가</span><span>{c.total.toLocaleString()}원</span></div>
+              </div>
+            </>
+          );
+        })()}
+      </div>
+    </>
   );
 });
+

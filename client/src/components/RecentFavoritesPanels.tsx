@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { openCompareModal } from "./CompareModal";
 import { api, ApiError } from "../api";
-import { useAuth } from "../auth";
+import { isServerAuthToken, useAuth } from "../auth";
 import { formatWonKorean } from "../util/format";
 
 type Row = {
@@ -23,7 +24,7 @@ export function RecentFavoritesPanels() {
   const [favorites, setFavorites] = useState<Row[]>([]);
 
   const load = useCallback(async () => {
-    if (!token) return;
+    if (!isServerAuthToken(token)) return;
     const r = await api<{ recentWork: Row[]; favorites: Row[] }>("/me/home", { token });
     setRecentWork(r.recentWork);
     setFavorites(r.favorites);
@@ -34,7 +35,7 @@ export function RecentFavoritesPanels() {
   }, [load]);
 
   async function toggleStar(kind: Row["kind"], id: string) {
-    if (!token) return;
+    if (!isServerAuthToken(token)) return;
     try {
       await api("/me/favorites/toggle", {
         method: "POST",
@@ -82,7 +83,7 @@ export function RecentFavoritesPanels() {
               <div
                 className="flex-1 min-w-0 cursor-pointer"
                 onClick={() => {
-                  if (r.kind === "comparison") nav("/compare");
+                  if (r.kind === "comparison") openCompareModal();
                   else nav("/add");
                 }}
               >

@@ -2,21 +2,15 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
 } from "react";
 import { useProject } from "./ProjectContext";
 import {
+  applyQuoteEntityName,
   createEmptyMaterialEntity,
-  enrichProductComputed,
-  enrichSetComputed,
-  getMaterial,
-  getProducts,
-  getSets,
-  putMaterial,
-  putProduct,
-  putSet,
 } from "../offline/stores";
 import { newTabId, saveQuoteTabs, type QuoteKind, type QuoteTabRow } from "../offline/addQuoteTabs";
 import { labelForTabRow, type TabLabel } from "./quoteTabsLabels";
@@ -31,39 +25,7 @@ function persistState(projectId: string, tabs: QuoteTabRow[], activeTabId: strin
 }
 
 function applyEntityName(kind: QuoteKind, entityId: string, rawName: string) {
-  const name = rawName.trim() || "이름 없음";
-  if (kind === "material") {
-    const m = getMaterial(entityId);
-    if (!m) return;
-    putMaterial({
-      ...m,
-      name,
-      form: { ...m.form, name },
-      updatedAt: new Date().toISOString(),
-    });
-  } else if (kind === "product") {
-    const p = getProducts().find((x) => x.id === entityId);
-    if (!p) return;
-    putProduct(
-      enrichProductComputed({
-        ...p,
-        name,
-        form: { ...p.form, name },
-        updatedAt: new Date().toISOString(),
-      })
-    );
-  } else {
-    const s = getSets().find((x) => x.id === entityId);
-    if (!s) return;
-    putSet(
-      enrichSetComputed({
-        ...s,
-        name,
-        form: { ...s.form, name },
-        updatedAt: new Date().toISOString(),
-      })
-    );
-  }
+  applyQuoteEntityName(kind, entityId, rawName);
 }
 
 type Ctx = {
@@ -79,6 +41,10 @@ type Ctx = {
   renameTabEntity: (tabId: string, name: string) => void;
   updateTabLabel: (tabId: string, meta: TabLabel) => void;
   handleQuoteEntityRebind: (entityId: string) => void;
+  /** 기존 탭이 있으면 활성화만, 없으면 해당 entityId로 탭을 추가 */
+  openEntityTab: (kind: QuoteKind, entityId: string) => void;
+  /** 해당 entity를 연 탭을 모두 닫기(삭제 시) */
+  closeTabsForEntity: (kind: QuoteKind, entityId: string) => void;
   refreshLabels: () => void;
 };
 
@@ -89,6 +55,15 @@ function QuoteTabsStateProvider({ projectId, children }: { projectId: string; ch
   const [activeTabId, setActiveTabIdState] = useState<string | null>(() => initialQuotePack(projectId).activeTabId);
   const [tabLabels, setTabLabels] = useState<Record<string, TabLabel>>(() => initialQuotePack(projectId).tabLabels);
   const [stripRenameEpoch, setStripRenameEpoch] = useState(0);
+
+  // key={projectId}로 래퍼를 리마운트하지 않고 동기화 — 그렇지 않으면 activeProjectId 변경 시 전체가 리마운트되어 QuoteShell(프로젝트 패널 열림)이 초기화됨
+  useEffect(() => {
+    const pack = initialQuotePack(projectId);
+    setTabs(pack.tabs);
+    setActiveTabIdState(pack.activeTabId);
+    setTabLabels(pack.tabLabels);
+    setStripRenameEpoch(0);
+  }, [projectId]);
 
   const hydrateLabels = useCallback((rows: QuoteTabRow[]) => {
     const next: Record<string, TabLabel> = {};
@@ -121,6 +96,59 @@ function QuoteTabsStateProvider({ projectId, children }: { projectId: string; ch
       setActiveTabIdState(row.tabId);
     },
     [projectId, hydrateLabels]
+  );
+
+  const openEntityTab = useCallback(
+    (kind: QuoteKind, entityId: string) => {
+      setTabs((prev) => {
+        const hit = prev.find((t) => t.kind === kind && t.entityId === entityId);
+        if (hit) {
+          persistState(projectId, prev, hit.tabId);
+          setActiveTabIdState(hit.tabId);
+          return prev;
+        }
+        const row: QuoteTabRow = { tabId: newTabId(), kind, entityId };
+        const next = [...prev, row];
+        persistState(projectId, next, row.tabId);
+        hydrateLabels(next);
+        setActiveTabIdState(row.tabId);
+        return next;
+      });
+    },
+    [projectId, hydrateLabels]
+  );
+
+  const closeTabsForEntity = useCallback(
+    (kind: QuoteKind, entityId: string) => {
+      setTabs((prev) => {
+        const toClose = prev
+          .filter((t) => t.kind === kind && t.entityId === entityId)
+          .map((t) => t.tabId);
+        if (toClose.length === 0) return prev;
+        const next = prev.filter((t) => t.kind !== kind || t.entityId !== entityId);
+        if (next.length === 0) {
+          const eid = createEmptyMaterialEntity();
+          const tid = newTabId();
+          const row: QuoteTabRow[] = [{ tabId: tid, kind: "material", entityId: eid }];
+          persistState(projectId, row, tid);
+          setActiveTabIdState(tid);
+          hydrateLabels(row);
+          return row;
+        }
+        const closedActive = activeTabId != null && toClose.includes(activeTabId);
+        let newActive = activeTabId;
+        if (closedActive) {
+          const i = prev.findIndex((t) => t.tabId === activeTabId);
+          const adj = next[Math.max(0, i - 1)] ?? next[0];
+          newActive = adj.tabId;
+          setActiveTabIdState(adj.tabId);
+        }
+        persistState(projectId, next, closedActive ? newActive! : activeTabId!);
+        hydrateLabels(next);
+        return next;
+      });
+    },
+    [projectId, activeTabId, hydrateLabels]
   );
 
   const closeTab = useCallback(
@@ -212,6 +240,8 @@ function QuoteTabsStateProvider({ projectId, children }: { projectId: string; ch
       renameTabEntity,
       updateTabLabel,
       handleQuoteEntityRebind,
+      openEntityTab,
+      closeTabsForEntity,
       refreshLabels,
     }),
     [
@@ -221,6 +251,8 @@ function QuoteTabsStateProvider({ projectId, children }: { projectId: string; ch
       stripRenameEpoch,
       setActiveTabId,
       addTab,
+      openEntityTab,
+      closeTabsForEntity,
       closeTab,
       reorderTabs,
       renameTabEntity,
@@ -235,11 +267,7 @@ function QuoteTabsStateProvider({ projectId, children }: { projectId: string; ch
 
 export function QuoteTabsProvider({ children }: { children: ReactNode }) {
   const { activeProjectId } = useProject();
-  return (
-    <QuoteTabsStateProvider key={activeProjectId} projectId={activeProjectId}>
-      {children}
-    </QuoteTabsStateProvider>
-  );
+  return <QuoteTabsStateProvider projectId={activeProjectId}>{children}</QuoteTabsStateProvider>;
 }
 
 export function useQuoteTabs() {

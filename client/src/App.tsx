@@ -1,43 +1,39 @@
-import type { ReactNode } from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
-import { AuthProvider, useAuth } from "./auth";
-import { LoginPage } from "./pages/LoginPage";
+import { useEffect } from "react";
+import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { AuthProvider } from "./auth";
+import { CompareModalRoot, openCompareModal } from "./components/CompareModal";
 import { MainLayout } from "./layout/MainLayout";
 import { QuoteWorkspaceLayout } from "./layout/QuoteWorkspaceLayout";
 import { AddPage } from "./pages/AddPage";
 import { MaterialQuotePage } from "./pages/MaterialQuotePage";
 import { ProductQuotePage } from "./pages/ProductQuotePage";
 import { SetQuotePage } from "./pages/SetQuotePage";
-import { ComparePage } from "./pages/ComparePage";
 import { ArchivePage } from "./pages/ArchivePage";
 import { AdminDbPage } from "./pages/AdminDbPage";
 
-function Protected({ children }: { children: ReactNode }) {
-  const { token } = useAuth();
-  if (!token) return <Navigate to="/login" replace />;
-  return <>{children}</>;
+function LegacyCompareRoute() {
+  const nav = useNavigate();
+  useEffect(() => {
+    openCompareModal();
+    nav("/material", { replace: true });
+  }, [nav]);
+  return null;
 }
 
 export function App() {
   return (
     <AuthProvider>
+      <CompareModalRoot />
       <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route
-          path="/"
-          element={
-            <Protected>
-              <MainLayout />
-            </Protected>
-          }
-        >
+        <Route path="/login" element={<Navigate to="/material" replace />} />
+        <Route path="/" element={<MainLayout />}>
           <Route index element={<Navigate to="/material" replace />} />
           <Route path="add" element={<AddPage />} />
           <Route element={<QuoteWorkspaceLayout />}>
             <Route path="material" element={<MaterialQuotePage />} />
             <Route path="product" element={<ProductQuotePage />} />
             <Route path="set" element={<SetQuotePage />} />
-            <Route path="compare" element={<ComparePage />} />
+            <Route path="compare" element={<LegacyCompareRoute />} />
           </Route>
           <Route path="archive" element={<ArchivePage />} />
           <Route path="admin/db" element={<AdminDbPage />} />
