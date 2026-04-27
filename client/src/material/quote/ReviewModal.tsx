@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-export type ExtraProcType = "forming" | "router" | "curvedge" | "custom";
+export type ExtraProcType = "forming" | "router" | "ruta2" | "tenoner" | "curvedge" | "custom";
 export type ExtraProc = { type: ExtraProcType; label?: string; mm: number; _id: number };
 
 export type ParsedReviewRow = {
@@ -34,7 +34,9 @@ type EditField = "W" | "D" | "T" | "edgeT";
 
 const PROC_TYPES = [
   { key: "forming" as const,  label: "포밍",           rate: 1 },
-  { key: "router" as const,   label: "루타",           rate: 2 },
+  { key: "router" as const,   label: "일반 루타",       rate: 2 },
+  { key: "ruta2" as const,    label: "2차 루타",        rate: 1 },
+  { key: "tenoner" as const,  label: "테노너",          rate: 0.8 },
   { key: "curvedge" as const, label: "곡면엣지 머시닝", rate: 3 },
 ];
 
@@ -404,7 +406,7 @@ export function ReviewModal({ open, sourceLabel, rows, onClose, onBack, onRegist
                                   onClick={() => addPresetProc(row.id, pt.key)}
                                 >
                                   <span className="font-medium">{pt.label}</span>
-                                  <span className="text-[10px] text-[#aaa]">{pt.rate},000원/m · mm 입력</span>
+                                  <span className="text-[10px] text-[#aaa]">{pt.rate * 1000}원/m · mm 입력</span>
                                 </div>
                               ))}
                               <div className="my-1 h-[1px] bg-[#f0f0f0]" />

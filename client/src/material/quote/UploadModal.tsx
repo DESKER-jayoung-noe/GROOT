@@ -51,7 +51,7 @@ function buildRows(materials: unknown[], fallbackSource: ParsedReviewRow["source
       id: `${fileName}-${i}`,
       checked: true,
       name: String(r.name ?? r.partName ?? "자재"),
-      file: String(r.fileName ?? fileName),
+      file: String(r.stpFile ?? r.file ?? r.fileName ?? fileName),
       source,
       W: Number(r.wMm ?? r.w ?? 0),
       D: Number(r.dMm ?? r.d ?? 0),

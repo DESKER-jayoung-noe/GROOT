@@ -1230,6 +1230,7 @@ function emptyMaterialForm(): MaterialFormState {
     edge45PaintM: 0,
     ruta2M: 0,
     tenonerMm: 0,
+    curvedManualMm: 0,
   };
 }
 

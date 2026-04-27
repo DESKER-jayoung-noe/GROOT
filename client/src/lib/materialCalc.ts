@@ -20,7 +20,7 @@ export function effectiveYieldPlacementMode(
 }
 import { cuttingFeeFromPlacementCount, hotmeltPricePerM2 } from "./pricing";
 
-export type MaterialEdgePreset = "none" | "abs1t" | "abs2t" | "paint" | "custom";
+export type MaterialEdgePreset = "none" | "abs1t" | "abs2t" | "paint" | "custom" | "edge45" | "curved";
 export type EdgeCustomSides = { top: number; bottom: number; left: number; right: number };
 export type EdgeSelection = { top: boolean; bottom: boolean; left: boolean; right: boolean };
 
@@ -41,21 +41,45 @@ export function formatEdgeSidesKo(s: EdgeSelection): string {
   return parts.length ? parts.join("·") : "없음";
 }
 
-function abs1tRatePerM(hMm: number, color: string): number {
-  if (color === "BI") return 0;
-  if (hMm <= 12) return 139;
-  if (hMm <= 15) return 143;
-  if (hMm <= 18) return 159;
-  if (hMm <= 21) return 224;
-  return 280;
+/** 보드 두께(T) → ABS 엣지 폭(mm) 매핑 */
+export const THICK_TO_ABS_WIDTH: Partial<Record<number, number>> = {
+  9: 16, 12: 16, 15: 19, 18: 21, 22: 26, 25: 33, 28: 33,
+};
+
+/**
+ * ABS 평엣지 WW 단가표 (원/m) — 폭(mm) × T값
+ * null: 해당 폭에서 2T 없음
+ */
+export const ABS_PRICE: Record<number, { 1: number; 2: number | null }> = {
+  16: { 1: 139, 2: null },
+  19: { 1: 166, 2: 251  },
+  21: { 1: 184, 2: 271  },
+  26: { 1: 224, 2: 338  },
+  33: { 1: 280, 2: 439  },
+};
+
+/** ABS 평엣지 WW 자재코드 — 폭(mm) × T값 */
+export const ABS_CODE: Record<number, Partial<Record<1 | 2, string>>> = {
+  16: { 1: 'W21-3E-3400A' },
+  19: { 1: 'W21-3E-3399A', 2: 'W21-3E-3174'  },
+  21: { 1: 'W21-3E-3401A', 2: 'W21-3E-3168'  },
+  26: { 1: 'W21-3E-3398B', 2: 'W21-3E-3398C' },
+  33: { 1: 'W21-3E-3402',  2: 'W21-3E-3152'  },
+};
+
+/** 보드 두께로 ABS 엣지 폭 결정 */
+export function getAbsWidth(hMm: number): number | undefined {
+  return THICK_TO_ABS_WIDTH[hMm];
 }
 
-function abs2tRatePerM(hMm: number, color: string): number {
-  if (color === "BI") return 0;
-  if (hMm <= 15) return 251;
-  if (hMm <= 18) return 293;
-  return 364;
+/** 해당 보드 두께에서 2T ABS 사용 가능 여부 */
+export function hasAbs2T(hMm: number): boolean {
+  const w = THICK_TO_ABS_WIDTH[hMm];
+  return w !== undefined && ABS_PRICE[w]?.['2'] !== null;
 }
+
+/** 도장엣지 WW — DB 단가 (원/m) */
+const PAINT_EDGE_MATERIAL_WON_PER_M = 2500;
 
 export const EDGE45_PAINT_RATES: Record<string, number> = {
   "직각+코팅": 2500,
@@ -123,6 +147,8 @@ export interface MaterialInput {
   ruta2M: number;
   /** 테노너 가공 길이 (mm) */
   tenonerMm: number;
+  /** 곱면 수동 가공 길이 (mm) — curved 엣지 선택 시 머시닝과 별도 입력 */
+  curvedManualMm: number;
   unitFormingPerM: number;
   unitAssemblyPerH: number;
   unitWashPerM2: number;
@@ -159,15 +185,13 @@ export function buildMaterialInput(f: {
     edge45PaintM: f.edge45PaintM ?? 0,
     ruta2M: f.ruta2M ?? 0,
     tenonerMm: f.tenonerMm ?? 0,
+    curvedManualMm: (f as unknown as { curvedManualMm?: number }).curvedManualMm ?? 0,
     unitFormingPerM: f.unitFormingPerM ?? 1000,
     unitAssemblyPerH: f.unitAssemblyPerH ?? 35,
     unitWashPerM2: f.unitWashPerM2 ?? 500,
   };
 }
 
-function hotmeltWonPerLinearM(thicknessMm: number): number {
-  return hotmeltPricePerM2(thicknessMm);
-}
 
 export interface SheetYieldRow {
   sheetId: SheetId; label: string; sheetW: number; sheetH: number; pieces: number;
@@ -215,41 +239,89 @@ function bestSheetPrices(input: MaterialInput): { rows: SheetYieldRow[]; bestId:
 }
 
 export function computeMaterial(input: MaterialInput, selectedSheetId: SheetId | null): ComputedMaterial {
-  const preset =
-    input.edgePreset === "custom" ? ("abs1t" as const) : input.edgePreset;
+  const isAbs1T  = input.edgePreset === "abs1t";
+  const isAbs2T  = input.edgePreset === "abs2t";
+  const isCustom = input.edgePreset === "custom";
+  const isPaintPreset  = input.edgePreset === "paint";
+  const isEdge45Preset = input.edgePreset === "edge45";
+  const isCurvedPreset = input.edgePreset === "curved";
+  const isAnyAbs = isAbs1T || isAbs2T || isCustom;
+
   const { rows, bestId } = bestSheetPrices(input);
   const sel = selectedSheetId && rows.find((r) => r.sheetId === selectedSheetId)?.pieces
     ? selectedSheetId : bestId;
   const row = sel ? rows.find((r) => r.sheetId === sel) : null;
   const materialCostWon = row && row.pieces > 0 ? row.costPerPiece : 0;
-  const sides: EdgeSelection =
-    preset === "none" ? { top: false, bottom: false, left: false, right: false } : input.edgeSides ?? DEFAULT_EDGE_SIDES;
-  const edgeLenMm = edgeLengthMm(input.wMm, input.dMm, sides);
-  const edgeLengthM = edgeLenMm / 1000;
-  const edgeLabel = edgeLabelFromPreset(preset);
-  let edgeRate = 0;
-  if (preset === "abs1t") edgeRate = abs1tRatePerM(input.hMm, input.edgeColor);
-  else if (preset === "abs2t") edgeRate = abs2tRatePerM(input.hMm, input.edgeColor);
-  else if (preset === "paint") edgeRate = PAINT_EDGE_WON_PER_M;
-  const edgeCostWon = preset === "none" ? 0 : edgeLengthM * edgeRate;
-  const applyHotmelt = (preset === "abs1t" || preset === "abs2t") && edgeLengthM > 0;
-  const hotmeltCostWon = applyHotmelt ? edgeLengthM * hotmeltWonPerLinearM(input.hMm) : 0;
+
+  // 보드 두께 → ABS 폭 → 단가 (DB 기준)
+  const absWidth = THICK_TO_ABS_WIDTH[input.hMm];
+  const absP1 = absWidth ? (ABS_PRICE[absWidth]?.[1] ?? 0) : 0;
+  const absP2 = absWidth ? (ABS_PRICE[absWidth]?.[2] ?? 0) : 0;
+
+  // ── 엣지 길이(m) + 재료비 계산 ──────────────────────────────────────
+  // 4면 1T / 4면 2T: 각 변마다 +50mm 트림 여유
+  //   총길이 = (W+50)×2 + (D+50)×2
+  // 사용자 설정: 면별 T값(0=없음,1=1T,2=2T)으로 개별 계산
+  //   상/하 = (W+50)/1000 × rate(T), 좌/우 = (D+50)/1000 × rate(T)
+  // 도장: 전체 둘레 × 재료비 단가
+  let edgeLengthM = 0;
+  let edgeCostWon = 0;
+
+  if (isAbs1T || isAbs2T) {
+    const lenMm = (input.wMm + 50) * 2 + (input.dMm + 50) * 2;
+    edgeLengthM = lenMm / 1000;
+    edgeCostWon = edgeLengthM * (isAbs2T ? absP2 : absP1);
+  } else if (isCustom) {
+    const cs = input.edgeCustomSides;
+    const w50m = (input.wMm + 50) / 1000;
+    const d50m = (input.dMm + 50) / 1000;
+    const sideLen  = [w50m, w50m, d50m, d50m];
+    const sideTVals = [cs.top, cs.bottom, cs.left, cs.right];
+    sideTVals.forEach((t, i) => {
+      if (t <= 0 || !absWidth) return;
+      const rate = t === 2 ? absP2 : absP1;
+      edgeLengthM += sideLen[i];
+      edgeCostWon += sideLen[i] * rate;
+    });
+  } else if (isPaintPreset) {
+    edgeLengthM = perimeterMm(input.wMm, input.dMm) / 1000;
+    edgeCostWon = edgeLengthM * PAINT_EDGE_MATERIAL_WON_PER_M;
+  }
+
+  const edgeLabel = edgeLabelFromPreset(input.edgePreset);
+
+  // 핫멜트: ABS 계열(abs1t/abs2t/custom) — 실소요량(㎡) × 단가(원/㎡)
+  //   실소요량 = 엣지 길이(m) × 보드 두께(m) = edgeLengthM × hMm/1000
+  const hotmeltCostWon = isAnyAbs && edgeLengthM > 0
+    ? edgeLengthM * (input.hMm / 1000) * hotmeltPricePerM2(input.hMm)
+    : 0;
+
   const cuttingSheetCount = row && row.pieces > 0 ? 1 : 0;
   const cuttingPlacementCount = row && row.pieces > 0 ? row.pieces : 0;
   const cuttingCostWon = cuttingFeeFromPlacementCount(cuttingPlacementCount);
   const formingCostWon = input.formingM * (input.unitFormingPerM || 1000);
-  const rutaCostWon = input.rutaM * 2000;
+  const rutaCostWon  = input.rutaM * 2000;
   const ruta2CostWon = input.ruta2M * 1000;
   const assemblyCostWon = input.assemblyHours * (input.unitAssemblyPerH || 35);
-  const washCostWon = input.washM2 * (input.unitWashPerM2 || 500);
+  const washCostWon  = input.washM2 * (input.unitWashPerM2 || 500);
   const boring1CostWon = input.boring1Ea * 100;
   const boring2CostWon = input.boring2Ea * 50;
-  const boringCostWon = boring1CostWon + boring2CostWon;
-  const curvedRate = input.curvedEdgeType === "manual" ? 2000 : input.curvedEdgeType === "machining" ? 3000 : 0;
-  const curvedCostWon = input.curvedEdgeM * curvedRate;
-  const edge45TapingCostWon = input.edge45TapingM * 500;
+  const boringCostWon  = boring1CostWon + boring2CostWon;
+
+  // 곱면 엣지: curved 선택 시에만 (머시닝 m당 3,000원 + 수동 m당 2,000원)
+  const curvedCostWon = isCurvedPreset
+    ? input.curvedEdgeM * 3000 + (input.curvedManualMm ?? 0) / 1000 * 2000
+    : 0;
+
+  // 45도 테이핑: edge45 선택 시에만 (m당 500원)
+  const edge45TapingCostWon = isEdge45Preset ? input.edge45TapingM * 500 : 0;
+
+  // 도장 엣지: paint 선택 시 패널 둘레 자동 적용 (방식별 단가)
   const paintRate = EDGE45_PAINT_RATES[input.edge45PaintType] ?? 0;
-  const edge45PaintCostWon = input.edge45PaintM * paintRate;
+  const edge45PaintCostWon = isPaintPreset
+    ? (perimeterMm(input.wMm, input.dMm) / 1000) * paintRate
+    : 0;
+
   const edge45CostWon = edge45TapingCostWon + edge45PaintCostWon;
   const tenonerCostWon = (Math.max(0, input.tenonerMm) / 1000) * TENONER_WON_PER_M;
   const processingTotalWon = edgeCostWon + hotmeltCostWon + cuttingCostWon + formingCostWon +

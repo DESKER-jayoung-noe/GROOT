@@ -1,193 +1,29 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth";
 import { ProjectProvider } from "../context/ProjectContext";
 import { QuoteTabsProvider } from "../context/QuoteTabsContext";
 import { openCompareModal } from "../components/CompareModal";
+import { DBModal } from "../components/DBModal";
 import { isOfflineFile } from "../offline/isOffline";
 import { AppSidebar } from "./AppSidebar";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { TreeProvider, useTree } from "../context/TreeContext";
+import { getMaterials } from "../offline/stores";
+import {
+  computeMaterial,
+  buildMaterialInput,
+  effectiveYieldPlacementMode,
+} from "../lib/materialCalc";
+import type { SheetId } from "../lib/yield";
 
 const QUOTE_PATHS = ["/material", "/product", "/set", "/compare"];
 
-const ACCEPTED_EXTENSIONS = ".zip,.stp,.pdf,.dwg";
 
-function UploadModal({ onClose }: { onClose: () => void }) {
-  const [dragging, setDragging] = useState(false);
-  const [files, setFiles] = useState<File[]>([]);
-
-  function handleDrop(e: React.DragEvent) {
-    e.preventDefault();
-    setDragging(false);
-    const dropped = Array.from(e.dataTransfer.files);
-    setFiles((prev) => [...prev, ...dropped]);
-  }
-
-  function handleFileInput(e: React.ChangeEvent<HTMLInputElement>) {
-    if (!e.target.files) return;
-    const selected = Array.from(e.target.files);
-    setFiles((prev) => [...prev, ...selected]);
-  }
-
-  function removeFile(idx: number) {
-    setFiles((prev) => prev.filter((_, i) => i !== idx));
-  }
-
-  return (
-    <>
-      <div
-        style={{
-          position: "fixed",
-          inset: 0,
-          background: "rgba(0,0,0,.35)",
-          zIndex: 400,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-        onMouseDown={onClose}
-      >
-        <div
-          style={{
-            background: "#fff",
-            borderRadius: "10px",
-            width: "min(480px, 94vw)",
-            boxShadow: "0 16px 48px rgba(0,0,0,.18)",
-            display: "flex",
-            flexDirection: "column",
-            overflow: "hidden",
-            animation: "modalIn .18s ease",
-          }}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          {/* Head */}
-          <div
-            style={{
-              padding: "14px 20px",
-              borderBottom: "1px solid #f0f0f0",
-              display: "flex",
-              alignItems: "center",
-              gap: "10px",
-            }}
-          >
-            <span style={{ fontSize: "14px", fontWeight: 700, flex: 1 }}>도면/모델링 업로드</span>
-            <button
-              type="button"
-              onClick={onClose}
-              style={{
-                width: 28,
-                height: 28,
-                border: "none",
-                background: "none",
-                cursor: "pointer",
-                color: "#aaa",
-                fontSize: 20,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                borderRadius: 4,
-                fontFamily: "inherit",
-              }}
-            >
-              ×
-            </button>
-          </div>
-
-          {/* Body */}
-          <div style={{ padding: "20px" }}>
-            {/* Drop zone */}
-            <label
-              style={{
-                display: "block",
-                border: dragging ? "2px dashed #1a1a1a" : "2px dashed #d0d0d0",
-                borderRadius: "8px",
-                padding: "32px 20px",
-                textAlign: "center",
-                cursor: "pointer",
-                background: dragging ? "#f8f8f8" : "#fafafa",
-                transition: "all .15s",
-                marginBottom: "14px",
-              }}
-              onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-              onDragLeave={() => setDragging(false)}
-              onDrop={handleDrop}
-            >
-              <div style={{ fontSize: "28px", marginBottom: "8px", color: "#bbb" }}>&#8679;</div>
-              <div style={{ fontSize: "13px", fontWeight: 600, color: "#555", marginBottom: "4px" }}>
-                파일을 여기에 드래그하거나 클릭해서 선택하세요
-              </div>
-              <div style={{ fontSize: "11px", color: "#aaa" }}>
-                지원 형식: .zip, .stp, .pdf, .dwg
-              </div>
-              <input
-                type="file"
-                accept={ACCEPTED_EXTENSIONS}
-                multiple
-                style={{ display: "none" }}
-                onChange={handleFileInput}
-              />
-            </label>
-
-            {/* File list */}
-            {files.length > 0 && (
-              <ul style={{ listStyle: "none", margin: "0 0 16px", padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
-                {files.map((f, i) => (
-                  <li
-                    key={i}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      padding: "6px 10px",
-                      background: "#f5f5f5",
-                      borderRadius: 5,
-                      fontSize: 12,
-                    }}
-                  >
-                    <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#333" }}>
-                      {f.name}
-                    </span>
-                    <span style={{ fontSize: 11, color: "#aaa", flexShrink: 0 }}>
-                      {(f.size / 1024).toFixed(0)} KB
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => removeFile(i)}
-                      style={{ border: "none", background: "none", cursor: "pointer", color: "#ccc", fontSize: 14, fontFamily: "inherit" }}
-                    >
-                      ×
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {/* Actions */}
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button type="button" className="btn-ghost" onClick={onClose}>
-                취소
-              </button>
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={onClose}
-                disabled={files.length === 0}
-                style={files.length === 0 ? { opacity: 0.4, cursor: "default" } : undefined}
-              >
-                업로드
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </>
-  );
-}
 
 function QuoteShell() {
-  const [uploadOpen, setUploadOpen] = useState(false);
-  const { lastSavedAt } = useTree();
+  const [dbOpen, setDbOpen] = useState(false);
+  const { lastSavedAt, treeNodes } = useTree();
   const [showSaved, setShowSaved] = useState(false);
 
   useEffect(() => {
@@ -196,6 +32,92 @@ function QuoteShell() {
     const t = window.setTimeout(() => setShowSaved(false), 1500);
     return () => clearTimeout(t);
   }, [lastSavedAt]);
+
+  /** 현재 프로젝트 자재 전체를 CSV로 내보내기 */
+  const handleExport = useCallback(() => {
+    const materials = getMaterials();
+    const matMap = new Map(materials.map((m) => [m.id, m]));
+
+    const headers = [
+      "세트명", "단품명", "자재명",
+      "W", "D", "T",
+      "소재", "표면재", "색상",
+      "원재료비", "엣지비", "가공비", "합계",
+    ];
+
+    const rows: string[][] = [];
+    let currentSet  = "";
+    let currentItem = "";
+
+    for (const node of treeNodes) {
+      if (node.type === "divider") {
+        currentSet  = "";
+        currentItem = "";
+      } else if (node.type === "set") {
+        currentSet  = node.name ?? "";
+        currentItem = "";
+      } else if (node.type === "item") {
+        currentItem = node.name ?? "";
+      } else if (node.type === "mat" && node.id) {
+        const mat = matMap.get(node.id);
+        if (!mat) continue;
+
+        const f = mat.form;
+        let matCost = 0, edgeCost = 0, procCost = 0, total = 0;
+        try {
+          const input = buildMaterialInput({
+            ...f,
+            placementMode: effectiveYieldPlacementMode(f.placementMode, f.cutOrientation),
+            sheetPrices: f.sheetPrices as Partial<Record<SheetId, number>>,
+          });
+          const c = computeMaterial(input, (f.selectedSheetId ?? null) as SheetId | null);
+          matCost  = Math.ceil(c.materialCostWon);
+          edgeCost = Math.ceil(c.edgeCostWon + c.hotmeltCostWon);
+          procCost = Math.ceil(c.processingTotalWon);
+          total    = Math.ceil(c.grandTotalWon);
+        } catch { /* 계산 오류 무시 */ }
+
+        rows.push([
+          currentSet,
+          currentItem,
+          f.name || "이름 없음",
+          String(f.wMm),
+          String(f.dMm),
+          String(f.hMm),
+          f.boardMaterial,
+          f.surfaceMaterial,
+          f.color,
+          String(matCost),
+          String(edgeCost),
+          String(procCost),
+          String(total),
+        ]);
+      }
+    }
+
+    if (rows.length === 0) {
+      alert("내보낼 자재가 없습니다.");
+      return;
+    }
+
+    const csv = [
+      headers.join(","),
+      ...rows.map((r) =>
+        r.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")
+      ),
+    ].join("\r\n");
+
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    const date = new Date().toISOString().slice(0, 10);
+    a.href     = url;
+    a.download = `desker_견적_${date}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [treeNodes]);
 
   return (
     <div className="desker-shell">
@@ -223,12 +145,15 @@ function QuoteShell() {
           <button
             type="button"
             className="g-btn"
-            onClick={() => setUploadOpen(true)}
+            onClick={() => window.dispatchEvent(new CustomEvent("groot:open-upload"))}
           >
             도면/모델링 업로드
           </button>
-          <button type="button" className="g-btn">
+          <button type="button" className="g-btn" onClick={handleExport}>
             내보내기
+          </button>
+          <button type="button" className="g-btn" onClick={() => setDbOpen(true)}>
+            DB
           </button>
         </div>
       </header>
@@ -241,7 +166,7 @@ function QuoteShell() {
         </div>
       </div>
 
-      {uploadOpen && <UploadModal onClose={() => setUploadOpen(false)} />}
+      {dbOpen && <DBModal onClose={() => setDbOpen(false)} />}
     </div>
   );
 }
