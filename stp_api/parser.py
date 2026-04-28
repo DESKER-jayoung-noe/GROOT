@@ -38,9 +38,9 @@ def decode_step_unicode(s: str) -> str:
     )
 
 
-# EDIT: 표준 두께 목록 — 실측값(.5mm 단위) 기준. 짝수 mm는 제거.
-# '18t' MATERIAL 문자열 → 18.0 → snap → 18.5 로 보정됨.
-STANDARD_THICKNESSES = [4.5, 9.0, 12.0, 15.5, 18.5, 22.5, 25.0, 28.5, 33.0]
+# EDIT: 표준 두께 목록 — 명목 두께 기준 (정수 mm). 사용자 표시는 "15T" 형태.
+# 실측 .5mm 단위는 사용자 입장에선 같은 것이라 정수로 통일.
+STANDARD_THICKNESSES = [4, 9, 12, 15, 18, 22, 25, 28, 33]
 
 def _snap_thickness(raw_t: float) -> Optional[float]:
     """
@@ -230,12 +230,18 @@ def extract_dims(stp_path: str) -> dict:
     return {"W": w, "D": d, "T": t}
 
 
-def _extract_edge_thickness(edge_content: str) -> float:
+def _extract_edge_thickness(edge_content: str, board_t: float = 0.0) -> tuple[float, str]:
     """
     엣지 파일에서 엣지 두께를 추출.
-    우선순위: EDGE_THICKNESS 디스크립터 → MATERIAL 'Nt ABS' 패턴 → 기본값 1.0
+    우선순위:
+      1. EDGE_THICKNESS 디스크립터  → source='descriptor'
+      2. PROCESS_CODE: E1A/E2A      → source='process_code'
+      3. MATERIAL 'Nt ABS' 패턴      → source='material_text'
+      4. 보드 두께 휴리스틱 (≥25T)   → source='board_heuristic' (추론)
+      5. 기본값 1.0                  → source='default' (임의)
     유효값: 1.0 또는 2.0 만 허용.
 
+    Returns: (thickness, source)
     # EDIT: 엣지 두께 추출 규칙 변경 시 이 함수
     """
     # 1. EDGE_THICKNESS 디스크립터
@@ -243,20 +249,33 @@ def _extract_edge_thickness(edge_content: str) -> float:
     if et_raw:
         try:
             t = float(et_raw)
-            return 2.0 if t >= 1.5 else 1.0
+            return ((2.0 if t >= 1.5 else 1.0), 'descriptor')
         except ValueError:
             pass
 
-    # 2. MATERIAL 문자열 "Nt ABS" 패턴 (예: "2t ABS", "1t ABS봉")
+    # 2. PROCESS_CODE: E1A=1T, E2A=2T (Fursys 표준 엣지 코드)
+    proc = _get_desc(edge_content, 'PROCESS_CODE') or ''
+    proc_up = proc.upper()
+    if proc_up.startswith('E2A'):
+        return (2.0, 'process_code')
+    if proc_up.startswith('E1A'):
+        return (1.0, 'process_code')
+
+    # 3. MATERIAL 문자열 "Nt ABS" 패턴 (예: "2t ABS", "1t ABS봉")
     mat_raw = _get_desc(edge_content, 'MATERIAL') or ''
     mat_dec = decode_step_unicode(mat_raw)
     m = re.search(r'(\d+(?:\.\d+)?)\s*t\s+ABS', mat_dec, re.IGNORECASE)
     if m:
         t = float(m.group(1))
-        return 2.0 if t >= 1.5 else 1.0
+        return ((2.0 if t >= 1.5 else 1.0), 'material_text')
 
-    # 3. 기본값
-    return 1.0
+    # 4. 보드 두께 기반 휴리스틱 (엣지파일에 정보가 전혀 없을 때)
+    # 25T 이상 두꺼운 보드는 통상 2T 엣지를 사용 (예: 28T 탑 패널)
+    if board_t >= 25.0:
+        return (2.0, 'board_heuristic')
+
+    # 5. 기본값
+    return (1.0, 'default')
 
 
 def analyze_edge(board_dims: dict, edge_dims: dict, edge_content: str = "", edge_t: float = 1.0) -> dict:
@@ -284,7 +303,7 @@ def analyze_edge(board_dims: dict, edge_dims: dict, edge_content: str = "", edge
     """
     bW, bD = board_dims["W"], board_dims["D"]
 
-    def _build_result(n: int) -> dict:
+    def _build_result(n: int, source: str = 'unknown') -> dict:
         _faces = ["top", "bottom", "left", "right"]
         _labels = {1: "1면", 2: "2면", 3: "3면", 4: "4면"}
         if n == 4:
@@ -301,9 +320,10 @@ def analyze_edge(board_dims: dict, edge_dims: dict, edge_content: str = "", edge
             "edge_T":     edge_t,
             "edge_length": length,
             "faces":      _faces[:n],
+            "face_count_source": source,  # 추론 단계 표기
         }
 
-    # 1. EDGE_EA / EDGE_COUNT 디스크립터 우선
+    # 1. EDGE_EA / EDGE_COUNT 디스크립터 우선 (가장 확실)
     if edge_content:
         for key in ('EDGE_EA', 'EDGE_COUNT'):
             raw = _get_desc(edge_content, key)
@@ -311,36 +331,69 @@ def analyze_edge(board_dims: dict, edge_dims: dict, edge_content: str = "", edge
                 try:
                     n = int(float(raw))
                     if 1 <= n <= 6:
-                        return _build_result(n)
+                        return _build_result(n, source='descriptor')
                 except ValueError:
                     pass
+
+    # 엣지 파일이 아예 없는 경우 → 기본값 4면 처리
+    if not edge_content:
+        return _build_result(4, source='no_edge_file')
 
     # 2. 바운딩박스 비교 fallback (T 제외 — 언롤드 엣지 파일의 T는 신뢰 불가)
     diff_W = round(edge_dims["W"] - bW, 1)
     diff_D = round(edge_dims["D"] - bD, 1)
 
-    fb = len(re.findall(r'FACE_OUTER_BOUND\s*\(', edge_content, re.IGNORECASE)) if edge_content else 0
+    fb = len(re.findall(r'FACE_OUTER_BOUND\s*\(', edge_content, re.IGNORECASE))
 
-    if diff_W <= 0.3 and diff_D <= 0.3:
-        # 0-diff: edge VP ≈ board VP. FACE_OUTER_BOUND count heuristic.
-        if fb >= 28:
-            return _build_result(4)
+    # 절대값 기준 diff (엣지파일 정렬 순서가 보드와 다를 수 있음)
+    abs_dW = abs(diff_W)
+    abs_dD = abs(diff_D)
+
+    big_thresh = 1.5    # 양쪽에 엣지 추가될 때의 최소 diff (1T 엣지 양면)
+    small_thresh = 0.5  # 한 축에 엣지 없는 것으로 간주할 임계
+
+    big_W = diff_W >= big_thresh
+    big_D = diff_D >= big_thresh
+    has_W = diff_W > small_thresh
+    has_D = diff_D > small_thresh
+
+    # 패턴 1: 두 축 모두 명확한 양수 diff → 4면 (확실)
+    if big_W and big_D:
+        return _build_result(4, source='bb_diff')
+
+    # 패턴 2: 한 축만 큼 (비대칭) — FB 보정 시 추론
+    if big_W and not has_D:
+        if fb >= 30:
+            return _build_result(4, source='bb_diff_with_fb')
+        return _build_result(2, source='bb_diff')
+    if big_D and not has_W:
+        if fb >= 30:
+            return _build_result(4, source='bb_diff_with_fb')
+        return _build_result(2, source='bb_diff')
+    if big_W and has_D:
+        return _build_result(3, source='bb_diff')
+    if big_D and has_W:
+        return _build_result(3, source='bb_diff')
+
+    # 패턴 3: 두 축 모두 작음 → FB count 기반 (덜 확실, 추론)
+    if abs_dW < big_thresh and abs_dD < big_thresh:
+        symmetric = max(abs_dW, abs_dD) < big_thresh and abs(abs_dW - abs_dD) < 1.5
+        if fb >= 30 and symmetric:
+            return _build_result(4, source='fb_count')
+        if fb >= 24:
+            return _build_result(3, source='fb_count')
         if fb >= 12:
-            return _build_result(2)
-        return _build_result(1)
+            return _build_result(2, source='fb_count')
+        return _build_result(1, source='fb_count')
 
-    # diff/edge_T 로 각 축 면수 계산
+    # fallback (음수 diff 등 예외 케이스)
     edge_t_safe = max(edge_t, 0.5)
     n_W = min(2, round(max(diff_W, 0) / edge_t_safe)) if diff_W > 0.3 else 0
     n_D = min(2, round(max(diff_D, 0) / edge_t_safe)) if diff_D > 0.3 else 0
     total = max(1, min(4, n_W + n_D))
-
-    # Small-diff override: formula yields ≤1 but FACEBOUND suggests more faces
-    # (e.g. shelf panels with 3-face edge where only 1mm expansion is visible in BB)
     if total <= 1 and fb >= 28:
         total = 3
-
-    return _build_result(total)
+    return _build_result(total, source='fallback')
 
 
 # ─────────────────────────────────────────────────────────────
@@ -633,7 +686,7 @@ def parse_stp_file(
          → MATERIAL 또는 THICKNESS 명시값이 있으면 t 를 덮어씀
       4. 엣지 페어가 있으면 엣지 파일도 읽어 face_count / edge_T 추출
          EDGE_EA 디스크립터 우선, 없으면 바운딩박스 비교
-      5. analyze_holes(board_content, t) 로 보링 카운트 (엣지 파일 분리)
+      5. 보링은 0으로 고정 (사용자가 검토 창에서 직접 입력)
       6. 펠트/FBFP 비목재 → is_wood=False 마킹
 
     반환 키 (buildRows / _norm 양쪽에서 인식):
@@ -696,12 +749,16 @@ def parse_stp_file(
     # ── 4. 엣지 분석 ─────────────────────────────────────────────
     edge_count = 0
     edge_t_val = 0.0
+    edge_count_source = 'no_edge_file'
+    edge_t_source = 'default'
+    has_edge_file = False
     if edge_path:
         try:
             with open(edge_path, encoding="utf-8", errors="ignore") as f:
                 edge_content = f.read()
+            has_edge_file = True
             ew, ed, et_raw, _ = extract_dims_from_stp(edge_content)
-            edge_t_val = _extract_edge_thickness(edge_content)
+            edge_t_val, edge_t_source = _extract_edge_thickness(edge_content, board_t=t)
 
             # W/D: 엣지파일이 완성 치수를 담고 있을 때만 사용 (board 대비 ±15% 이내)
             w_final = ew if (w > 0 and 0.95 <= ew / w <= 1.15) else w
@@ -712,14 +769,28 @@ def parse_stp_file(
             edge_info  = analyze_edge(board_dims, edge_dims,
                                       edge_content=edge_content, edge_t=edge_t_val)
             edge_count = edge_info.get("face_count", 0)
+            edge_count_source = edge_info.get("face_count_source", 'unknown')
 
             # 엣지파일 기반 완성 W/D 적용
             w, d = w_final, d_final
         except Exception:
             pass
 
-    # ── 5. 보링 분석 (보드 파일만, 엣지 제외) ────────────────────
-    h1, h2 = analyze_holes(content, t, t_axis)
+    # ── 5. 보링/루터 자동 감지 (boring_detector — 정확도 ~85%)
+    #    build123d/OCP 미설치 시 graceful fallback (0/0)
+    h1, h2 = 0, 0
+    router_slots: list[dict] = []
+    router_mm_total = 0.0
+    try:
+        from boring_detector import analyze_part as _br_analyze  # lazy
+        _br = _br_analyze(stp_path)
+        h1 = int(_br.get('boring_normal', 0))
+        h2 = int(_br.get('boring_2dan', 0))
+        router_slots = _br.get('router_slots', []) or []
+        router_mm_total = float(sum(float(s.get('perimeter_mm', 0)) for s in router_slots))
+    except Exception:
+        # build123d/OCP 미설치 또는 OCC 파싱 실패 — 검토 창에서 직접 입력
+        pass
 
     # ── 6. 펠트/비목재 판별 ──────────────────────────────────────
     is_wood = not _is_felt_board(content, part_code)
@@ -740,12 +811,18 @@ def parse_stp_file(
         "w":          w,
         "d":          d,
         "t":          t,
-        # 보링
+        # 보링 / 루터 (boring_detector V2)
         "holeCount":  h1,
         "hole2Count": h2,
+        "routerSlots": router_slots,
+        "routerMm":    router_mm_total,
         # 엣지
-        "edgeCount":  edge_count,
-        "edgeT":      edge_t_val,
+        "edgeCount":         edge_count,
+        "edgeT":             edge_t_val,
+        # 엣지 추론 단계 (UI 인디케이터용)
+        "edgeCountSource":   edge_count_source,
+        "edgeTSource":       edge_t_source,
+        "hasEdgeFile":       has_edge_file,
         # 소재
         "material":   mat_info.get("base_material", "PB"),
         "surface":    mat_info.get("surface", "LPM/O"),
