@@ -7,9 +7,11 @@ import { QuoteWorkspaceLayout } from "./layout/QuoteWorkspaceLayout";
 import { AddPage } from "./pages/AddPage";
 import { MaterialQuotePage } from "./pages/MaterialQuotePage";
 import { ProductQuotePage } from "./pages/ProductQuotePage";
-import { SetQuotePage } from "./pages/SetQuotePage";
+// PR2: SetQuotePage → SetOnePagePage 로 교체. 기존 컴포넌트는 .backup-pr2-start/SetQuotePage.tsx 보존.
+import { SetOnePagePage } from "./pages/SetOnePagePage";
 import { ArchivePage } from "./pages/ArchivePage";
 import { AdminDbPage } from "./pages/AdminDbPage";
+import { PartCardPage } from "./pages/PartCardPage";
 
 function LegacyCompareRoute() {
   const nav = useNavigate();
@@ -32,7 +34,8 @@ export function App() {
           <Route element={<QuoteWorkspaceLayout />}>
             <Route path="material" element={<MaterialQuotePage />} />
             <Route path="product" element={<ProductQuotePage />} />
-            <Route path="set" element={<SetQuotePage />} />
+            <Route path="set" element={<SetOnePagePage />} />
+            <Route path="parts/:partId" element={<PartCardPage />} />
             <Route path="compare" element={<LegacyCompareRoute />} />
           </Route>
           <Route path="archive" element={<ArchivePage />} />

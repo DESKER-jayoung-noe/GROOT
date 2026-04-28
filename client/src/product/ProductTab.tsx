@@ -3,15 +3,13 @@ import {
   useEffect,
   useImperativeHandle,
   useMemo,
-  useRef,
   useState,
-  type MouseEvent as ReactMouseEvent,
 } from "react";
-import * as THREE from "three";
 import { useTree, getMaterialsForItem } from "../context/TreeContext";
-import { computeMaterial, buildMaterialInput } from "../lib/materialCalc";
+import { computeMaterial, buildMaterialInput, effectiveYieldPlacementMode } from "../lib/materialCalc";
 import type { SheetId } from "../lib/yield";
-import type { BomMaterialData } from "../offline/stores";
+import { getMaterial, type BomMaterialData } from "../offline/stores";
+import type { MaterialFormState } from "../material/MaterialTab";
 
 export type ProductTabHandle = {
   saveDraft: () => Promise<void>;
@@ -56,51 +54,55 @@ function calcMatCost(data: BomMaterialData): number {
   return computeMaterial(input, null).grandTotalWon;
 }
 
+/** StoredMaterial.form 전체로 원가 계산 (보링·가공 포함) */
+function calcMatCostFromForm(form: MaterialFormState): number {
+  if (form.wMm <= 0 || form.dMm <= 0 || form.hMm <= 0) return 0;
+  const input = buildMaterialInput({
+    ...form,
+    sheetPrices: form.sheetPrices as Partial<Record<SheetId, number>>,
+    placementMode: effectiveYieldPlacementMode(
+      form.placementMode,
+      form.cutOrientation ?? "default",
+    ),
+  });
+  return computeMaterial(
+    input,
+    (form.selectedSheetId ?? null) as SheetId | null,
+  ).grandTotalWon;
+}
+
+/** MaterialFormState → BomMaterialData (ProductTab 표시용) */
+function formToBomData(form: MaterialFormState): BomMaterialData {
+  const presetMap: Record<string, { edgeType: string; edgeSetting: string }> = {
+    abs1t:  { edgeType: "ABS",   edgeSetting: "4면 1T" },
+    abs2t:  { edgeType: "ABS",   edgeSetting: "4면 2T" },
+    paint:  { edgeType: "도장",   edgeSetting: "" },
+    custom: { edgeType: "ABS",   edgeSetting: "사용자" },
+    none:   { edgeType: "없음",   edgeSetting: "" },
+  };
+  const { edgeType, edgeSetting } = presetMap[form.edgePreset] ?? presetMap.none;
+  return {
+    w: form.wMm, d: form.dMm, t: form.hMm,
+    material: form.boardMaterial ?? "PB",
+    surface:  form.surfaceMaterial ?? "LPM/O",
+    color:    form.color ?? "WW",
+    edgeType, edgeSetting,
+    edgeCustom: form.edgeCustomSides ?? { top: 0, bottom: 0, left: 0, right: 0 },
+    processes: [],
+  };
+}
+
 function roundup5(v: number) {
   return Math.ceil((v * 0.05) / 100) * 100;
 }
 
-type Packed = { bw: number; bd: number; t: number; x: number; y: number; z: number };
-type PackedResult = { placed: Packed[]; totalH: number };
-
-function packBoards(boards: { w: number; d: number; t: number }[], boxW: number, boxD: number): PackedResult {
-  const sorted = [...boards].sort((a, b) => b.w * b.d - a.w * a.d);
-  const layers: { ys: number; slots: { x: number; z: number; w: number; d: number; used: boolean }[]; h: number }[] = [];
-  const placed: Packed[] = [];
-
-  for (const b of sorted) {
-    let best:
-      | { layer: (typeof layers)[number]; slot: (typeof layers)[number]["slots"][number]; bw: number; bd: number; waste: number }
-      | null = null;
-    for (const layer of layers) {
-      for (const slot of layer.slots) {
-        if (slot.used) continue;
-        for (const [bw, bd] of [[b.w, b.d], [b.d, b.w]]) {
-          if (bw <= slot.w && bd <= slot.d) {
-            const waste = (slot.w - bw) * (slot.d - bd);
-            if (!best || waste < best.waste) best = { layer, slot, bw, bd, waste };
-          }
-        }
-      }
-    }
-    if (best) {
-      const { layer, slot, bw, bd } = best;
-      placed.push({ bw, bd, t: b.t, x: slot.x + bw / 2 - boxW / 2, z: slot.z + bd / 2 - boxD / 2, y: layer.ys + b.t / 2 });
-      slot.used = true;
-      if (slot.w - bw > 10) layer.slots.push({ x: slot.x + bw, z: slot.z, w: slot.w - bw, d: slot.d, used: false });
-      if (slot.d - bd > 10) layer.slots.push({ x: slot.x, z: slot.z + bd, w: bw, d: slot.d - bd, used: false });
-      if (layer.h < b.t) layer.h = b.t;
-    } else {
-      const ys = layers.reduce((s, l) => s + l.h, 0);
-      const nl = { ys, slots: [{ x: 0, z: 0, w: boxW, d: boxD, used: true }], h: b.t };
-      layers.push(nl);
-      placed.push({ bw: b.w, bd: b.d, t: b.t, x: b.w / 2 - boxW / 2, z: b.d / 2 - boxD / 2, y: ys + b.t / 2 });
-      if (b.w < boxW) nl.slots.push({ x: b.w, z: 0, w: boxW - b.w, d: boxD, used: false });
-      if (b.d < boxD) nl.slots.push({ x: 0, z: b.d, w: b.w, d: boxD - b.d, used: false });
-    }
-  }
-  return { placed, totalH: layers.reduce((s, l) => s + l.h, 0) };
-}
+type HardwareItem = {
+  id: string;
+  name: string;
+  qty: number;
+  unitPrice: number;
+  enabled: boolean;
+};
 
 export const ProductTab = forwardRef<
   ProductTabHandle,
@@ -112,338 +114,390 @@ export const ProductTab = forwardRef<
     stripRenameEpoch?: number;
   }
 >(function ProductTab({ active = true, onQuoteMeta }, ref) {
-  const [tab, setTab] = useState<0 | 1 | 2>(0);
-  const [hwOn, setHwOn] = useState(true);
-  const [hwN, setHwN] = useState(12);
-  const [hwBag, setHwBag] = useState(1);
-  const [nkVal, setNkVal] = useState<"500" | "1000" | "1500" | "2000">("1000");
+  // Hardware items list
+  const [hwItems, setHwItems] = useState<HardwareItem[]>([
+    { id: "hw_0", name: "별도 철물", qty: 12, unitPrice: 21, enabled: true },
+  ]);
+  // Add-hardware mini-form state
+  const [hwAddName, setHwAddName] = useState("");
+  const [hwAddQty, setHwAddQty] = useState(1);
+  const [hwAddPrice, setHwAddPrice] = useState(500);
+  // Packaging block open/closed
+  const [packOpen, setPackOpen] = useState(true);
+  // Disabled material IDs (unchecked rows)
+  const [disabledIds, setDisabledIds] = useState<Set<string>>(new Set());
   const [, setMsg] = useState<string | null>(null);
-  const [packInfo, setPackInfo] = useState({ sizeText: "—", emptyText: "—" });
 
   const { treeNodes, activeItem } = useTree();
   const materials = useMemo(() => getMaterialsForItem(treeNodes, activeItem), [treeNodes, activeItem]);
   const name = treeNodes[activeItem]?.name ?? "이름 없음";
 
-  // Box dimensions from actual material data
+  /** 노드의 BomMaterialData 취득 — 없으면 localStorage fallback */
+  const resolveMatData = (m: ReturnType<typeof getMaterialsForItem>[number]): BomMaterialData | null => {
+    if (m.data) return m.data;
+    if (m.id) {
+      const stored = getMaterial(m.id);
+      if (stored?.form) return formToBomData(stored.form);
+    }
+    return null;
+  };
+
+  // Box dimensions from material data
   const boxDims = useMemo(() => {
-    const mats = materials.map(m => m.data).filter((d): d is BomMaterialData => !!d);
-    if (mats.length === 0) return { bw: 1220, bd: 620, bh: 50 };
-    const bw = Math.max(...mats.map(m => m.w)) + 20;
-    const bd = Math.max(...mats.map(m => m.d)) + 20;
-    const bh = mats.reduce((s, m) => s + m.t, 0) + 30;
+    const dims = materials
+      .map(resolveMatData)
+      .filter((d): d is BomMaterialData => !!d);
+    if (dims.length === 0) return { bw: 1220, bd: 620, bh: 50 };
+    const bw = Math.max(...dims.map(m => m.w)) + 20;
+    const bd = Math.max(...dims.map(m => m.d)) + 20;
+    const bh = dims.reduce((s, m) => s + m.t, 0) + 30;
     return { bw, bd, bh };
-  }, [materials]);
+  }, [materials]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Estimated weight: density 0.0007 kg/cm³
-  const estWeight = useMemo(() => {
-    const mats = materials.map(m => m.data).filter((d): d is BomMaterialData => !!d);
-    const kg = mats.reduce((s, m) => s + (m.w / 10) * (m.d / 10) * (m.t / 10) * 0.0007, 0);
-    return Math.round(kg * 10) / 10;
-  }, [materials]);
-
-  // Per-material costs
+  // Per-material costs (보링·가공 포함 전액 계산)
   const matCosts = useMemo(
-    () => materials.map(m => ({ name: m.name ?? "이름 없음", data: m.data, cost: m.data ? calcMatCost(m.data) : 0 })),
-    [materials]
+    () => materials.map(m => {
+      const data = resolveMatData(m);
+      let cost = 0;
+      if (m.id) {
+        const stored = getMaterial(m.id);
+        if (stored?.form) cost = calcMatCostFromForm(stored.form);
+        else if (data) cost = calcMatCost(data);
+      } else if (data) {
+        cost = calcMatCost(data);
+      }
+      return { id: m.id ?? "", name: m.name ?? "이름 없음", data, cost };
+    }),
+    [materials], // eslint-disable-line react-hooks/exhaustive-deps
   );
-  const matTotal = useMemo(() => matCosts.reduce((s, m) => s + m.cost, 0), [matCosts]);
 
-  // Auto-select packaging based on material count
-  const autoNkVal = useMemo((): "500" | "1000" | "1500" | "2000" => {
+  // Only sum enabled (checked) materials
+  const matTotal = useMemo(
+    () => matCosts
+      .filter(m => !disabledIds.has(m.id))
+      .reduce((s, m) => s + m.cost, 0),
+    [matCosts, disabledIds]
+  );
+
+  // Hardware totals (derived from hwItems)
+  const hwCostTotal = useMemo(
+    () => hwItems.filter(h => h.enabled).reduce((s, h) => s + h.qty * h.unitPrice, 0),
+    [hwItems]
+  );
+  // hwN kept for right-panel compatibility (shows total qty in "N개 × 21원" label)
+  const hwN = useMemo(
+    () => hwItems.filter(h => h.enabled).reduce((s, h) => s + h.qty, 0),
+    [hwItems]
+  );
+
+  // Auto packaging tier based on material count
+  const nkVal = useMemo((): number => {
     const n = materials.length;
-    if (n <= 2) return "500";
-    if (n <= 5) return "1000";
-    if (n <= 8) return "1500";
-    return "2000";
+    if (n <= 2) return 500;
+    if (n <= 5) return 1000;
+    if (n <= 8) return 1500;
+    return 2000;
   }, [materials.length]);
 
-  useEffect(() => { setNkVal(autoNkVal); }, [autoNkVal]);
-
-  // Boards for 3D packing
-  const boardsMemo = useMemo(() => {
-    const mats = materials.map(m => m.data).filter((d): d is BomMaterialData => !!d);
-    return mats.map(m => ({ w: m.w, d: m.d, t: m.t }));
-  }, [materials]);
-
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const parentRef = useRef<HTMLDivElement>(null);
-  const pivotRef = useRef<THREE.Group | null>(null);
+  const boxTierLabel = nkVal === 500 ? "소형 (1~2개)" : nkVal === 1000 ? "중형 (3~5개)" : nkVal === 1500 ? "대형 (6~8개)" : "특대 (9개+)";
 
   const calc = useMemo(() => {
     const { bw, bd } = boxDims;
     const wash = Math.round(bw * bd / 1e6 * 2 * 250);
     const tape = Math.round(((bw + 100) + (bd + 100) * 2) / 1000 * 15.42);
     const sticker = 6;
-    const hwCost = hwOn ? hwN * 21 : 0;
-    const bagCost = hwOn ? hwBag * 1000 : 0;
-    const nkCost = Number(nkVal);
-    const packSub = wash + hwCost + bagCost + nkCost + tape + sticker;
+    const hwCost = hwCostTotal;
+    const nkCost = nkVal;
+    const packSub = wash + hwCost + nkCost + tape + sticker;
     const base = matTotal + packSub;
     const overhead = roundup5(base);
     const factory = base + overhead;
-    return { hwCost, bagCost, nkCost, packSub, overhead, factory, wash, tape, sticker };
-  }, [hwOn, hwN, hwBag, nkVal, boxDims, matTotal]);
+    return { hwCost, nkCost, packSub, overhead, factory, wash, tape, sticker };
+  }, [hwCostTotal, nkVal, boxDims, matTotal]);
 
   useEffect(() => {
     onQuoteMeta?.({ name, grandTotalWon: calc.factory });
   }, [name, calc.factory, onQuoteMeta]);
 
-  useEffect(() => {
-    if (tab !== 1) return;
-    const canvas = canvasRef.current;
-    const parent = parentRef.current;
-    if (!canvas || !parent) return;
-
-    const { bw, bd } = boxDims;
-    const boards = boardsMemo.length > 0
-      ? boardsMemo
-      : [{ w: Math.max(bw - 20, 100), d: Math.max(bd - 20, 100), t: 18 }];
-    const packed = packBoards(boards, bw, bd);
-
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    renderer.setClearColor(0xf4f4f4, 1);
-    const scene = new THREE.Scene();
-    scene.add(new THREE.AmbientLight(0xffffff, 0.75));
-    const dl = new THREE.DirectionalLight(0xffffff, 0.8);
-    dl.position.set(4, 7, 4);
-    scene.add(dl);
-    const dl2 = new THREE.DirectionalLight(0xffffff, 0.25);
-    dl2.position.set(-3, -2, -3);
-    scene.add(dl2);
-
-    const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 100);
-    const pivot = new THREE.Group();
-    pivotRef.current = pivot;
-    scene.add(pivot);
-    const SC = 6 / Math.max(bw, bd, packed.totalH + 20, 100);
-
-    const buildMeshes = (placed: Packed[], totalH: number) => {
-      if (!pivotRef.current) return;
-      const rm: THREE.Object3D[] = [];
-      pivotRef.current.children.forEach((c) => { if (c.userData.b || c.userData.w) rm.push(c); });
-      rm.forEach((c: THREE.Object3D) => pivotRef.current?.remove(c));
-
-      const boxH = (totalH + 20) * SC;
-      const boxWsc = bw * SC;
-      const boxDsc = bd * SC;
-      const wire = new THREE.LineSegments(
-        new THREE.EdgesGeometry(new THREE.BoxGeometry(boxWsc, boxH, boxDsc)),
-        new THREE.LineBasicMaterial({ color: 0xc0c0c0 })
-      );
-      wire.userData.w = true;
-      pivotRef.current.add(wire);
-      const colors = [0x374151, 0x4b5563, 0x6b7280, 0x374151, 0x4b5563];
-      placed.forEach((p, i) => {
-        const pw = p.bw * SC;
-        const ph = p.t * SC;
-        const pd = p.bd * SC;
-        const yc = -boxH / 2 + p.y * SC;
-        const mesh = new THREE.Mesh(
-          new THREE.BoxGeometry(pw, ph, pd),
-          new THREE.MeshLambertMaterial({ color: colors[i % colors.length] })
-        );
-        mesh.position.set(p.x * SC, yc, p.z * SC);
-        mesh.userData.b = true;
-        pivotRef.current?.add(mesh);
-      });
-      const vol = placed.reduce((s, p) => s + p.bw * p.bd * p.t, 0);
-      const bv = bw * bd * (totalH + 20);
-      const emptyVol = bv - vol;
-      const emptyH = bw > 0 && bd > 0 ? Math.round(emptyVol / (bw * bd)) : 0;
-      setPackInfo({ sizeText: `${bw}×${bd}×${totalH + 20}mm`, emptyText: `${bw}×${bd}×${emptyH}mm` });
-    };
-
-    buildMeshes(packed.placed, packed.totalH);
-
-    let rX = 0.38, rY = 0.5, cd = 4.5, drag = false, lx = 0, ly = 0;
-    const updateCamera = () => {
-      camera.position.set(cd * Math.sin(rY) * Math.cos(rX), cd * Math.sin(rX), cd * Math.cos(rY) * Math.cos(rX));
-      camera.lookAt(0, 0, 0);
-    };
-    updateCamera();
-
-    const md = (e: MouseEvent) => { drag = true; lx = e.clientX; ly = e.clientY; };
-    const mm = (e: MouseEvent) => {
-      if (!drag) return;
-      rY += (e.clientX - lx) * 0.007; rX += (e.clientY - ly) * 0.007;
-      rX = Math.max(-1.3, Math.min(1.3, rX)); lx = e.clientX; ly = e.clientY; updateCamera();
-    };
-    const mu = () => { drag = false; };
-    const wh = (e: WheelEvent) => { e.preventDefault(); cd = Math.max(2, Math.min(10, cd * (1 + e.deltaY * 0.001))); updateCamera(); };
-    canvas.addEventListener("mousedown", md);
-    window.addEventListener("mousemove", mm);
-    window.addEventListener("mouseup", mu);
-    canvas.addEventListener("wheel", wh, { passive: false });
-
-    const resize = () => {
-      const w = parent.clientWidth, h = parent.clientHeight;
-      if (!w || !h) return;
-      renderer.setSize(w, h, false);
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
-    };
-    let raf = 0;
-    const loop = () => { raf = requestAnimationFrame(loop); resize(); renderer.render(scene, camera); };
-    loop();
-
-    return () => {
-      cancelAnimationFrame(raf);
-      canvas.removeEventListener("mousedown", md);
-      window.removeEventListener("mousemove", mm);
-      window.removeEventListener("mouseup", mu);
-      canvas.removeEventListener("wheel", wh);
-      renderer.dispose();
-      pivotRef.current = null;
-    };
-  }, [tab, boxDims, boardsMemo]);
-
-  const repack = (e: ReactMouseEvent<HTMLButtonElement>) => {
-    const btn = e.currentTarget;
-    const prev = btn.textContent;
-    btn.textContent = "✓ 완료";
-    window.setTimeout(() => { btn.textContent = prev ?? "다시 쌓기"; }, 900);
-  };
-
   useImperativeHandle(ref, () => ({
     saveDraft: async () => setMsg("임시저장되었습니다."),
     save: async () => setMsg("저장되었습니다."),
     createNew: () => setMsg(null),
-    openLibrary: () => setTab(2),
+    openLibrary: () => {},
     loadFromVault: async () => setMsg("보관함 불러오기는 새 화면에서 미구현입니다."),
   }), []);
 
   if (!active) return null;
 
-  const secStyle: React.CSSProperties = { fontSize: "10px", fontWeight: 700, color: "#aaa", letterSpacing: ".1em", textTransform: "uppercase", marginBottom: "8px" };
+  // ── Handlers ──────────────────────────────────────────────────────────────
+  const toggleMat = (id: string) => {
+    setDisabledIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleHw = (id: string) => {
+    setHwItems(prev => prev.map(h => h.id === id ? { ...h, enabled: !h.enabled } : h));
+  };
+
+  const removeHw = (id: string) => {
+    setHwItems(prev => prev.filter(h => h.id !== id));
+  };
+
+  const addHw = () => {
+    if (!hwAddName.trim()) return;
+    setHwItems(prev => [...prev, {
+      id: `hw_${Date.now()}`,
+      name: hwAddName.trim(),
+      qty: hwAddQty,
+      unitPrice: hwAddPrice,
+      enabled: true,
+    }]);
+    setHwAddName("");
+    setHwAddQty(1);
+    setHwAddPrice(500);
+  };
+
+  // ── Shared sub-styles ──────────────────────────────────────────────────────
+  const sectionLabelStyle: React.CSSProperties = {
+    fontSize: "11px", fontWeight: 700, color: "#aaa",
+    textTransform: "uppercase", letterSpacing: ".1em",
+  };
 
   return (
     <div className="page active" style={{ display: "flex" }}>
       <div className="item-body">
-        {/* Left panel */}
-        <div className="item-left">
-          <div className="it-tabs">
-            <div className={`it-tab${tab === 0 ? " on" : ""}`} onClick={() => setTab(0)}>포장 정보</div>
-            <div className={`it-tab${tab === 1 ? " on" : ""}`} onClick={() => setTab(1)}>3D 박스</div>
-            <div className={`it-tab${tab === 2 ? " on" : ""}`} onClick={() => setTab(2)}>포함 자재</div>
+
+        {/* ── Left panel — new single-scroll layout ───────────────────────── */}
+        <div className="item-left" style={{ overflowY: "auto", display: "flex", flexDirection: "column" }}>
+
+          {/* Header */}
+          <div style={{ padding: "20px 20px 16px", borderBottom: "1px solid #f0f0f0", flexShrink: 0 }}>
+            <div style={{ fontSize: "13px", color: "#888", marginBottom: "4px" }}>{name}</div>
+            <div style={{ fontSize: "26px", fontWeight: 700, color: "#1a1a1a", letterSpacing: "-0.02em", lineHeight: 1.15 }}>
+              {calc.factory.toLocaleString()}원
+            </div>
+            <div style={{ fontSize: "11px", color: "#aaa", marginTop: "3px" }}>공장판매가 (자동 계산)</div>
           </div>
 
-          {/* Tab 0: 포장 정보 */}
-          <div className={`it-tc${tab === 0 ? " on" : ""}`}>
-            <div style={{ maxWidth: "50%" }}>
-              <div className="sec-title mb8" style={secStyle}>철물</div>
-              <div className="inp-row">
-                <span className="inp-label">별도 철물 포함</span>
-                <input type="checkbox" className="chk" checked={hwOn} onChange={e => setHwOn(e.target.checked)} />
-              </div>
-              <div className="inp-row">
-                <span className="inp-label">철물 수량<span className="inp-sub">개당 21원</span></span>
-                <input type="number" className="num-inp" value={hwN} onChange={e => setHwN(Number(e.target.value) || 0)} />
-                <span style={{ fontSize: "10px", color: "#999", marginLeft: "4px" }}>개</span>
-              </div>
-              <div className="inp-row">
-                <span className="inp-label">별도 철물 묶음 수<span className="inp-sub">1,000원/묶음</span></span>
-                <input type="number" className="num-inp" value={hwBag} onChange={e => setHwBag(Number(e.target.value) || 0)} />
-                <span style={{ fontSize: "10px", color: "#999", marginLeft: "4px" }}>묶음</span>
-              </div>
-            </div>
-
-            <div className="divider-line" />
-
-            <div style={{ maxWidth: "50%" }}>
-              <div className="sec-title mb8" style={{ ...secStyle, marginTop: "4px" }}>박스 포장비</div>
-              <div style={{ fontSize: "10px", color: "#bbb", marginBottom: "8px" }}>
-                자재 <span style={{ color: "#555", fontWeight: 600 }}>{materials.length}개</span> 기준으로 자동 선택됨
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
-                {(["500", "1000", "1500", "2000"] as const).map(v => (
-                  <label key={v} className={`part-label${nkVal === v ? " sel" : ""}`}>
-                    <input type="radio" name="parts" value={v} checked={nkVal === v} onChange={() => setNkVal(v)} style={{ accentColor: "#1a1a1a" }} />
-                    {v === "500" && "1~2개"}{v === "1000" && "3~5개 / 기본"}{v === "1500" && "6~8개"}{v === "2000" && "9개 이상"}
-                    <span className={`auto-badge${v === autoNkVal ? " on" : ""}`}>자동</span>
-                    <span style={{ color: "#bbb", marginLeft: "auto" }}>{Number(v).toLocaleString()}원</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            {materials.length > 0 && (
-              <>
-                <div className="divider-line" />
-                <div style={secStyle}>포함 자재</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
-                  {materials.map((m, i) => (
-                    <div key={i} style={{ fontSize: "11px", color: "#555", padding: "3px 0" }}>
-                      {m.name ?? "이름 없음"}
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-
-          {/* Tab 1: 3D 박스 */}
-          <div style={{ display: tab === 1 ? "flex" : "none", flex: 1, minHeight: 0, flexDirection: "column" }}>
-            <div className="canvas-wrap" ref={parentRef} style={{ flex: 1, minHeight: 0 }}>
-              <canvas ref={canvasRef} />
-              <div className="drag-hint">드래그 회전 · 스크롤 줌</div>
-            </div>
-            <div style={{ padding: "12px 16px", flexShrink: 0 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-                <div className="sec-title" style={{ margin: 0, ...secStyle }}>박스 정보</div>
-                <button className="repack-btn" onClick={repack}>
-                  <svg width="12" height="12" viewBox="0 0 13 13" fill="none">
-                    <path d="M2 6.5a4.5 4.5 0 1 1 .9 2.7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-                    <path d="M2 10.5V7.5h3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                  다시 쌓기
-                </button>
-              </div>
-              <div className="bs-grid">
-                <div className="bs-item"><div className="bs-label">외곽 크기</div><div className="bs-value" style={{ fontSize: "11px" }}>{packInfo.sizeText}</div></div>
-                <div className="bs-item"><div className="bs-label">빈 공간</div><div className="bs-value" style={{ fontSize: "11px" }}>{packInfo.emptyText}</div></div>
-                <div className="bs-item"><div className="bs-label">자재 수</div><div className="bs-value">{materials.length}개</div></div>
-                <div className="bs-item"><div className="bs-label">예상 무게</div><div className="bs-value">{estWeight} kg</div></div>
-              </div>
-            </div>
-          </div>
-
-          {/* Tab 2: 포함 자재 */}
-          <div className={`it-tc${tab === 2 ? " on" : ""}`}>
-            <div className="sec-title mb8" style={secStyle}>
-              포함 자재{" "}
-              <span style={{ fontSize: "10px", color: "#bbb", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>
+          {/* ── Materials table ─────────────────────────────────────────────── */}
+          <section style={{ padding: "16px 20px 14px", borderBottom: "1px solid #f0f0f0", flexShrink: 0 }}>
+            <div style={{ ...sectionLabelStyle, marginBottom: "10px" }}>
+              자재{" "}
+              <span style={{ color: "#ccc", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>
                 {materials.length}개
               </span>
             </div>
+
             {matCosts.length === 0 ? (
-              <div style={{ fontSize: "12px", color: "#ccc", padding: "16px 0", textAlign: "center" }}>
+              <div style={{ fontSize: "12px", color: "#ccc", padding: "10px 0", textAlign: "center" }}>
                 등록된 자재가 없습니다
               </div>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                {matCosts.map((m, i) => (
-                  <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", background: "#f8f8f8", borderRadius: "5px" }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: "12px", fontWeight: 500, color: "#333" }}>{m.name}</div>
-                      {m.data && (
-                        <div style={{ fontSize: "10px", color: "#999", marginTop: "2px" }}>
-                          {m.data.w}×{m.data.d}×{m.data.t}T · {m.data.material} ·{" "}
-                          {m.data.edgeType !== "없음" ? `${m.data.edgeType} ${m.data.edgeSetting}` : "엣지 없음"}
-                        </div>
-                      )}
-                    </div>
-                    <div style={{ fontSize: "11px", fontWeight: 600, color: "#282828", flexShrink: 0, marginLeft: "8px" }}>
-                      {m.cost > 0 ? m.cost.toLocaleString() + "원" : "—"}
-                    </div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px" }}>
+                <thead>
+                  <tr style={{ color: "#bbb", borderBottom: "1px solid #f0f0f0" }}>
+                    <th style={{ width: "20px", textAlign: "left", paddingBottom: "6px", fontWeight: 500 }}></th>
+                    <th style={{ textAlign: "left", paddingBottom: "6px", fontWeight: 500 }}>자재명</th>
+                    <th style={{ textAlign: "right", paddingBottom: "6px", fontWeight: 500 }}>규격</th>
+                    <th style={{ textAlign: "right", paddingBottom: "6px", fontWeight: 500 }}>소재</th>
+                    <th style={{ textAlign: "right", paddingBottom: "6px", fontWeight: 500 }}>가격</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {matCosts.map((m, i) => {
+                    const isOff = disabledIds.has(m.id);
+                    return (
+                      <tr key={i} style={{ opacity: isOff ? 0.35 : 1, transition: "opacity 0.15s" }}>
+                        <td style={{ paddingTop: "7px", paddingBottom: "7px", verticalAlign: "middle" }}>
+                          <input
+                            type="checkbox"
+                            checked={!isOff}
+                            onChange={() => toggleMat(m.id)}
+                            style={{ width: "13px", height: "13px", cursor: "pointer", accentColor: "#1a1a1a" }}
+                          />
+                        </td>
+                        <td style={{ paddingTop: "7px", paddingBottom: "7px", verticalAlign: "middle", fontWeight: 500, color: "#333", fontSize: "12px", maxWidth: "120px" }}>
+                          <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.name}</div>
+                          {m.data?.edgeType && m.data.edgeType !== "없음" && (
+                            <div style={{ fontSize: "10px", color: "#bbb", marginTop: "1px" }}>
+                              {m.data.edgeType} {m.data.edgeSetting}
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ paddingTop: "7px", paddingBottom: "7px", verticalAlign: "middle", textAlign: "right", color: "#888", whiteSpace: "nowrap" }}>
+                          {m.data ? `${m.data.w}×${m.data.d}×${m.data.t}T` : "—"}
+                        </td>
+                        <td style={{ paddingTop: "7px", paddingBottom: "7px", verticalAlign: "middle", textAlign: "right", color: "#888" }}>
+                          {m.data?.material ?? "—"}
+                        </td>
+                        <td style={{ paddingTop: "7px", paddingBottom: "7px", verticalAlign: "middle", textAlign: "right", fontWeight: 600, color: "#1a1a1a", whiteSpace: "nowrap" }}>
+                          {m.cost > 0 ? m.cost.toLocaleString() + "원" : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </section>
+
+          {/* ── Hardware section ─────────────────────────────────────────────── */}
+          <section style={{ padding: "16px 20px 14px", borderBottom: "1px solid #f0f0f0", flexShrink: 0 }}>
+            <div style={{ ...sectionLabelStyle, marginBottom: "10px" }}>철물</div>
+
+            {/* Item list */}
+            {hwItems.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: "2px", marginBottom: "10px" }}>
+                {hwItems.map(h => (
+                  <div
+                    key={h.id}
+                    style={{
+                      display: "flex", alignItems: "center", gap: "8px",
+                      fontSize: "12px", padding: "5px 0",
+                      opacity: h.enabled ? 1 : 0.35, transition: "opacity 0.15s",
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={h.enabled}
+                      onChange={() => toggleHw(h.id)}
+                      style={{ width: "13px", height: "13px", cursor: "pointer", accentColor: "#1a1a1a", flexShrink: 0 }}
+                    />
+                    <span style={{ flex: 1, minWidth: 0, fontWeight: 500, color: "#333", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {h.name}
+                    </span>
+                    <span style={{ color: "#888", flexShrink: 0, fontSize: "11px" }}>
+                      {h.qty}개 × ₩{h.unitPrice.toLocaleString()} ={" "}
+                      <strong style={{ color: "#555" }}>₩{(h.qty * h.unitPrice).toLocaleString()}</strong>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeHw(h.id)}
+                      title="삭제"
+                      style={{
+                        background: "none", border: "none", cursor: "pointer",
+                        color: "#ccc", padding: "0 1px", fontSize: "15px", lineHeight: 1,
+                        flexShrink: 0, display: "flex", alignItems: "center",
+                      }}
+                    >
+                      ×
+                    </button>
                   </div>
                 ))}
               </div>
             )}
-          </div>
+
+            {/* Add hardware mini-form */}
+            <div style={{ display: "flex", gap: "5px", alignItems: "center" }}>
+              <input
+                type="text"
+                placeholder="철물명"
+                value={hwAddName}
+                onChange={e => setHwAddName(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") addHw(); }}
+                style={{
+                  flex: 2, minWidth: 0, fontSize: "11px",
+                  border: "1px solid #e8e8e8", borderRadius: "4px",
+                  padding: "4px 7px", outline: "none", background: "#fafafa",
+                  fontFamily: "inherit",
+                }}
+              />
+              <input
+                type="number"
+                value={hwAddQty}
+                min={1}
+                onChange={e => setHwAddQty(Math.max(1, Number(e.target.value) || 1))}
+                title="수량"
+                style={{
+                  width: "42px", fontSize: "11px",
+                  border: "1px solid #e8e8e8", borderRadius: "4px",
+                  padding: "4px 4px", outline: "none", background: "#fafafa",
+                  textAlign: "center", fontFamily: "inherit",
+                }}
+              />
+              <span style={{ fontSize: "11px", color: "#aaa", flexShrink: 0 }}>×</span>
+              <input
+                type="number"
+                value={hwAddPrice}
+                min={0}
+                onChange={e => setHwAddPrice(Math.max(0, Number(e.target.value) || 0))}
+                title="단가 (원)"
+                style={{
+                  width: "54px", fontSize: "11px",
+                  border: "1px solid #e8e8e8", borderRadius: "4px",
+                  padding: "4px 5px", outline: "none", background: "#fafafa",
+                  textAlign: "right", fontFamily: "inherit",
+                }}
+              />
+              <span style={{ fontSize: "11px", color: "#aaa", flexShrink: 0 }}>원</span>
+              <button
+                type="button"
+                onClick={addHw}
+                style={{
+                  fontSize: "11px", fontWeight: 600, color: "#1a1a1a",
+                  background: "#f0f0f0", border: "none", borderRadius: "4px",
+                  padding: "4px 10px", cursor: "pointer", flexShrink: 0,
+                  fontFamily: "inherit",
+                }}
+              >
+                추가
+              </button>
+            </div>
+          </section>
+
+          {/* ── Packaging block (collapsible) ───────────────────────────────── */}
+          <section style={{ padding: "0 20px", flexShrink: 0 }}>
+            <button
+              type="button"
+              onClick={() => setPackOpen(v => !v)}
+              style={{
+                width: "100%", display: "flex", alignItems: "center",
+                justifyContent: "space-between", padding: "14px 0",
+                background: "none", border: "none", cursor: "pointer",
+                borderBottom: packOpen ? "1px solid #f0f0f0" : "none",
+              }}
+            >
+              <span style={sectionLabelStyle}>포장비</span>
+              <svg
+                width="8" height="8" viewBox="0 0 8 8" fill="none"
+                style={{ transform: packOpen ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.15s", color: "#ccc" }}
+              >
+                <path d="M2 1L6 4L2 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            {packOpen && (
+              <div style={{ paddingBottom: "16px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12px" }}>
+                  <span style={{ color: "#555" }}>
+                    세척비
+                    <span style={{ fontSize: "10px", color: "#bbb", marginLeft: "4px" }}>자동 계산</span>
+                  </span>
+                  <span style={{ fontWeight: 500, color: "#333" }}>{calc.wash.toLocaleString()}원</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12px" }}>
+                  <span style={{ color: "#555" }}>
+                    박스 포장
+                    <span style={{ fontSize: "10px", color: "#bbb", marginLeft: "4px" }}>{boxTierLabel}</span>
+                  </span>
+                  <span style={{ fontWeight: 500, color: "#333" }}>{calc.nkCost.toLocaleString()}원</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12px" }}>
+                  <span style={{ color: "#555" }}>테이프</span>
+                  <span style={{ fontWeight: 500, color: "#333" }}>{calc.tape.toLocaleString()}원</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12px" }}>
+                  <span style={{ color: "#555" }}>스티커</span>
+                  <span style={{ fontWeight: 500, color: "#333" }}>{calc.sticker.toLocaleString()}원</span>
+                </div>
+              </div>
+            )}
+          </section>
         </div>
 
-        {/* Right panel: receipt */}
+        {/* ── Right panel: receipt (DO NOT MODIFY) ────────────────────────── */}
         <div className="item-right">
           <div className="rcpt-name">{name}</div>
           <div className="rcpt-total">{calc.factory.toLocaleString()}원</div>

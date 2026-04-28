@@ -466,45 +466,100 @@ export function CompareModalRoot() {
     const filled = slots.filter(Boolean) as CompareEntry[];
     if (filled.length < 2) return;
     const rowDefs = CMP_ROWS[cmpType];
-    let h = `<table><thead><tr><th>항목</th>${filled.map((d) => `<th>${d.name}</th>`).join("")}</tr></thead><tbody>`;
+
+    const TH = `padding:6px 12px;border:1px solid #c8c8c8;background:#f0f0f0;font-weight:600;white-space:nowrap;`;
+    const TD = `padding:6px 12px;border:1px solid #c8c8c8;`;
+    const TDR = `padding:6px 12px;border:1px solid #c8c8c8;text-align:right;`;
+    const SEC = `padding:4px 12px;border:1px solid #c8c8c8;background:#e4e4e4;font-weight:700;font-size:11px;letter-spacing:0.05em;`;
+    const TOT = `padding:7px 12px;border:1px solid #c8c8c8;font-weight:700;`;
+    const TOTR = `padding:7px 12px;border:1px solid #c8c8c8;font-weight:700;text-align:right;`;
+
+    // ── HTML table (Confluence·Notion용) ──────────────────────────────────
+    let h = `<table style="border-collapse:collapse;font-family:sans-serif;font-size:13px;">`;
+    h += `<thead><tr>`;
+    h += `<th style="${TH}">항목</th>`;
+    filled.forEach((d) => {
+      h += `<th style="${TH}">${d.name}<br/><span style="font-size:10px;font-weight:400;color:#888;">${d.sub}</span></th>`;
+    });
+    h += `</tr></thead><tbody>`;
+
     rowDefs?.forEach((sec) => {
-      h += `<tr><td colspan="${1 + filled.length}"><b>${sec.sec}</b></td></tr>`;
+      h += `<tr><td colspan="${1 + filled.length}" style="${SEC}">${sec.sec}</td></tr>`;
       sec.rows.forEach((row) => {
-        h += `<tr><td>${row.label}</td>${filled
-          .map((d) => {
-            const v = d.rows[row.key];
-            return `<td>${
-              row.fmt === "won" && typeof v === "number"
-                ? v.toLocaleString() + "원"
-                : v ?? "—"
-            }</td>`;
-          })
-          .join("")}</tr>`;
+        h += `<tr><td style="${TD}">${row.label}</td>`;
+        filled.forEach((d) => {
+          const v = d.rows[row.key];
+          const disp = row.fmt === "won" && typeof v === "number"
+            ? v.toLocaleString() + "원"
+            : (v ?? "—");
+          h += `<td style="${TDR}">${disp}</td>`;
+        });
+        h += `</tr>`;
       });
     });
-    h += `<tr><td><b>${CMP_TL[cmpType]}</b></td>${filled
-      .map(
-        (d) =>
-          `<td><b>${((d.rows[CMP_TK[cmpType]] as number) || 0).toLocaleString()}원</b></td>`
-      )
-      .join("")}</tr></tbody></table>`;
-    navigator.clipboard
-      .write([
-        new ClipboardItem({
-          "text/html": new Blob([h], { type: "text/html" }),
-          "text/plain": new Blob([h], { type: "text/plain" }),
-        }),
-      ])
-      .then(() => alert("복사됐습니다!"))
-      .catch(() => {
-        const ta = document.createElement("textarea");
-        ta.value = h;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        document.body.removeChild(ta);
-        alert("복사됐습니다!");
+
+    h += `<tr><td style="${TOT}">${CMP_TL[cmpType]}</td>`;
+    filled.forEach((d) => {
+      const t = (d.rows[CMP_TK[cmpType]] as number) || 0;
+      h += `<td style="${TOTR}">${t.toLocaleString()}원</td>`;
+    });
+    h += `</tr></tbody></table>`;
+
+    // ── TSV plain text (Excel 호환) ────────────────────────────────────────
+    let plain = `항목\t${filled.map((d) => d.name).join("\t")}\n`;
+    rowDefs?.forEach((sec) => {
+      plain += `[${sec.sec}]\n`;
+      sec.rows.forEach((row) => {
+        plain += `${row.label}\t${filled
+          .map((d) => {
+            const v = d.rows[row.key];
+            return row.fmt === "won" && typeof v === "number"
+              ? v.toLocaleString() + "원"
+              : (v ?? "—");
+          })
+          .join("\t")}\n`;
       });
+    });
+    plain += `${CMP_TL[cmpType]}\t${filled
+      .map((d) => ((d.rows[CMP_TK[cmpType]] as number) || 0).toLocaleString() + "원")
+      .join("\t")}\n`;
+
+    // ── HTML 폴백: contenteditable div 선택 후 execCommand ────────────────
+    const htmlFallback = () => {
+      const div = document.createElement("div");
+      div.setAttribute("contenteditable", "true");
+      div.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0;pointer-events:none;";
+      div.innerHTML = h;
+      document.body.appendChild(div);
+      const sel = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(div);
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+      try {
+        document.execCommand("copy");
+        alert("복사됐습니다!\nConfluence에 붙여넣기하면 표로 나타납니다.");
+      } catch {
+        alert("복사 실패: 브라우저가 지원하지 않습니다.");
+      }
+      sel?.removeAllRanges();
+      document.body.removeChild(div);
+    };
+
+    // ── Clipboard API (Chrome 등 최신 브라우저) ───────────────────────────
+    if (typeof navigator.clipboard?.write === "function" && typeof ClipboardItem !== "undefined") {
+      navigator.clipboard
+        .write([
+          new ClipboardItem({
+            "text/html": new Blob([h], { type: "text/html" }),
+            "text/plain": new Blob([plain], { type: "text/plain" }),
+          }),
+        ])
+        .then(() => alert("복사됐습니다!\nConfluence에 붙여넣기하면 표로 나타납니다."))
+        .catch(() => htmlFallback());
+    } else {
+      htmlFallback();
+    }
   };
 
   if (!open) return null;

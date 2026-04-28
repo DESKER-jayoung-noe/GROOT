@@ -37,8 +37,17 @@ type StpMaterial = {
   W: number | null;
   D: number | null;
   T: number | null;
+  /** 평탄한 백엔드 필드 (parser.py 출력 포맷) */
+  w?: number;
+  d?: number;
+  t?: number;
+  edgeCount?: number;
+  edgeT?: number;
+  holeCount?: number;
+  hole2Count?: number;
   hole_1st?: number;
   hole_2nd?: number;
+  /** 구버전(중첩 객체) — 호환용 */
   edge?: {
     face_count: number;
     face_label: string;
@@ -102,18 +111,43 @@ function sheetPricesForT(hMm: number): Record<string, number> {
 
 // ===== API → form conversion =====
 function matApiToForm(mat: StpMaterial): MaterialFormState {
-  const hMm = mat.T != null ? Math.round(mat.T) : 15;
+  // 백엔드는 평탄 키(w/d/t/edgeCount/edgeT/holeCount/hole2Count)로 보냄.
+  // 일부 코드는 대문자(W/D/T)와 nested edge 객체를 기대해 폴백 체인 유지.
+  const wMm = Math.round(mat.W ?? mat.w ?? 0);
+  const dMm = Math.round(mat.D ?? mat.d ?? 0);
+  const hMmRaw = mat.T ?? mat.t;
+  const hMm = hMmRaw != null ? Math.round(hMmRaw) : 15;
   const sp = sheetPricesForT(hMm);
-  const faces = mat.edge?.faces ?? [];
-  const edgeT = mat.edge?.edge_T ?? 0;
+
+  const edgeCount = mat.edge?.face_count ?? mat.edgeCount ?? 0;
+  const edgeT = mat.edge?.edge_T ?? mat.edgeT ?? 0;
+  const facesNested = mat.edge?.faces;
+  // faces 가 명시되어 있으면 사용, 없으면 edgeCount 로 추정 (top→bottom→left→right 순)
+  const sidesByCount = (n: number) => ({
+    top:    n >= 1,
+    bottom: n >= 2,
+    left:   n >= 3,
+    right:  n >= 4,
+  });
+  const edgeSides = facesNested && facesNested.length > 0
+    ? {
+        top: facesNested.includes("top"),
+        bottom: facesNested.includes("bottom"),
+        left: facesNested.includes("left"),
+        right: facesNested.includes("right"),
+      }
+    : sidesByCount(edgeCount);
+
   let edgePreset: MaterialEdgePreset = "none";
-  if (edgeT >= 2) edgePreset = "abs2t";
-  else if (edgeT >= 0.5) edgePreset = "abs1t";
+  if (edgeCount >= 4 && edgeT >= 2) edgePreset = "abs2t";
+  else if (edgeCount >= 4 && edgeT >= 0.5) edgePreset = "abs1t";
+  else if (edgeCount >= 1) edgePreset = "custom";
+
   return {
     name: mat.name,
     partCode: mat.partCode ?? mat.assy ?? "",
-    wMm: mat.W != null ? Math.round(mat.W) : 0,
-    dMm: mat.D != null ? Math.round(mat.D) : 0,
+    wMm,
+    dMm,
     hMm,
     color: "WW",
     boardMaterial: mat.boardMaterial ?? "PB",
@@ -121,12 +155,7 @@ function matApiToForm(mat: StpMaterial): MaterialFormState {
     edgePreset,
     edgeColor: "WW",
     edgeCustomSides: { top: 0, bottom: 0, left: 0, right: 0 },
-    edgeSides: {
-      top: faces.includes("top"),
-      bottom: faces.includes("bottom"),
-      left: faces.includes("left"),
-      right: faces.includes("right"),
-    },
+    edgeSides,
     placementMode: "default",
     cutOrientation: "default",
     showDefault: true,
@@ -137,8 +166,8 @@ function matApiToForm(mat: StpMaterial): MaterialFormState {
     rutaM: 0,
     assemblyHours: mat.asm_parts?.length ?? 0,
     washM2: 0,
-    boring1Ea: mat.hole_1st ?? 0,
-    boring2Ea: mat.hole_2nd ?? 0,
+    boring1Ea: mat.hole_1st ?? mat.holeCount ?? 0,
+    boring2Ea: mat.hole_2nd ?? mat.hole2Count ?? 0,
     curvedEdgeM: 0,
     curvedEdgeType: "",
     edge45TapingM: 0,
@@ -146,6 +175,7 @@ function matApiToForm(mat: StpMaterial): MaterialFormState {
     edge45PaintM: 0,
     ruta2M: 0,
     tenonerMm: 0,
+    curvedManualMm: 0,
   };
 }
 

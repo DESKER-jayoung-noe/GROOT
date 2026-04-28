@@ -14,9 +14,14 @@ import {
   buildMaterialInput,
   effectiveYieldPlacementMode,
   DEFAULT_EDGE_SIDES as DEFAULT_EDGE_SELECTION,
+  EDGE45_PAINT_RATES,
+  THICK_TO_ABS_WIDTH,
+  ABS_PRICE,
+  ABS_CODE,
+  hasAbs2T,
   type EdgeSelection,
 } from "../lib/materialCalc";
-import type { SheetId } from "../lib/yield";
+import { SHEET_SPECS, piecesPerSheet, yieldPercent, type SheetId } from "../lib/yield";
 import {
   deleteMaterial as lsDelete,
   getMaterial as lsGet,
@@ -32,25 +37,155 @@ import {
 } from "../offline/stores";
 import { useTree } from "../context/TreeContext";
 import { formatWonKorean } from "../util/format";
-import { YieldBoardGrid } from "./YieldBoardGrid";
 
 
 export type PlacementMode = "default" | "rotated" | "mixed";
 
-/** 두께(T) × 원장 사이즈별 장당 단가 (원) — ERP 데이터 기반 */
+/** 두께(T) × 원장 사이즈별 장당 단가 (원) — ERP DB 기준 (WW LPM/O PB) */
+const _SP_15  = { "4x6": 23270, "4x8": 32800, "6x8": 23270 } as const;
+const _SP_18  = { "4x6": 16620, "4x8": 23270, "6x8": 23770 } as const;
+const _SP_22  = { "4x8": 19460, "6x8": 23270 } as const;
+const _SP_25  = { "4x8": 23270 } as const;
+const _SP_28  = { "4x8": 23270, "6x8": 23270 } as const;
 const SHEET_PRICE_BY_THICKNESS: Partial<Record<number, Partial<Record<string, number>>>> = {
-  12: { "4x8": 16720 },
-  15: { "4x6": 14450, "4x8": 19060, "6x8": 27320 },
-  18: { "4x6": 16620, "4x8": 21510, "6x8": 30650 },
-  22: { "4x8": 24680, "6x8": 35610 },
-  25: { "4x8": 6640 },
-  28: { "4x8": 29620, "6x8": 42600 },
+  12: { "4x8": 19460 },
+  15: _SP_15,   15.5: _SP_15,   // parser.py STANDARD_THICKNESSES .5 alias
+  18: _SP_18,   18.5: _SP_18,
+  22: _SP_22,   22.5: _SP_22,
+  25: _SP_25,
+  28: _SP_28,   28.5: _SP_28,
 };
 
 
 const ALL_SHEET_IDS = ["4x6", "4x8", "6x8"] as const;
 
-export type MaterialEdgePreset = "none" | "abs1t" | "abs2t" | "paint" | "custom";
+/** ERP 자재코드 + 장당 단가 매핑 (WW LPM/O PB, T값 기준)
+ *  parser.py STANDARD_THICKNESSES (.5 단위) 호환 위해 정수+소수 alias 둘 다 등록 */
+const _ERP_4x6_15 = { price: 23270, code: 'WDWP001205-R000' };
+const _ERP_4x6_18 = { price: 16620, code: 'WDPGBL0000550'  };
+const _ERP_4x8_12 = { price: 19460, code: 'WDWP000260-R000' };
+const _ERP_4x8_15 = { price: 32800, code: 'WDWP000258-R000' };
+const _ERP_4x8_18 = { price: 23270, code: 'WDWP000274-R000' };
+const _ERP_4x8_22 = { price: 19460, code: 'WDWP000266-R000' };
+const _ERP_4x8_25 = { price: 23270, code: 'WDWP001811-R000' };
+const _ERP_4x8_28 = { price: 23270, code: 'WDWP000407-R000' };
+const _ERP_6x8_15 = { price: 23270, code: 'WDWP001360-R000' };
+const _ERP_6x8_18 = { price: 23770, code: 'WDWPMF0000237'  };
+const _ERP_6x8_22 = { price: 23270, code: 'WDWP000730-R000' };
+const _ERP_6x8_28 = { price: 23270, code: 'WDWP000951-R000' };
+const SHEET_ERP: Record<string, Partial<Record<number, { price: number; code: string }>>> = {
+  '4x6': {
+    15: _ERP_4x6_15, 15.5: _ERP_4x6_15,
+    18: _ERP_4x6_18, 18.5: _ERP_4x6_18,
+  },
+  '4x8': {
+    12: _ERP_4x8_12,
+    15: _ERP_4x8_15, 15.5: _ERP_4x8_15,
+    18: _ERP_4x8_18, 18.5: _ERP_4x8_18,
+    22: _ERP_4x8_22, 22.5: _ERP_4x8_22,
+    25: _ERP_4x8_25,
+    28: _ERP_4x8_28, 28.5: _ERP_4x8_28,
+  },
+  '6x8': {
+    15: _ERP_6x8_15, 15.5: _ERP_6x8_15,
+    18: _ERP_6x8_18, 18.5: _ERP_6x8_18,
+    22: _ERP_6x8_22, 22.5: _ERP_6x8_22,
+    28: _ERP_6x8_28, 28.5: _ERP_6x8_28,
+  },
+};
+
+/** 추가 가공 드롭다운 옵션 (기본 3개 제외) */
+const PROC_OPTIONS: Array<{key: string; label: string; unit: string; tip: string}> = [
+  { key: 'forming', label: '포밍',    unit: 'mm', tip: 'm당 1,000원' },
+  { key: 'ruta',    label: '일반 루타', unit: 'mm', tip: 'm당 2,000원' },
+  { key: 'ruta2',   label: '2차 루타', unit: 'mm', tip: 'm당 1,000원' },
+  { key: 'tenoner', label: '테노너',   unit: 'mm', tip: 'm당 800원' },
+];
+
+/** 도장 엣지 방식 목록 */
+const PAINT_OPTIONS = Object.entries(EDGE45_PAINT_RATES).map(([key, rate]) => ({ key, rate }));
+
+
+/** 팝업 전용 상수 */
+const POPUP_LOSS_MM = 4;
+
+/** 원장 SVG 미리보기 — Portrait 고정 42×64, 모드별 컬러 */
+function SheetSVG({ sheetW, sheetH, wMm, dMm, mode }: {
+  sheetW: number; sheetH: number; wMm: number; dMm: number;
+  mode: "default" | "rotated" | "mixed";
+}) {
+  const SVG_W = 42, SVG_H = 64;
+  const scX = SVG_W / sheetW;
+  const scY = SVG_H / sheetH;
+  const pw = wMm + POPUP_LOSS_MM, ph = dMm + POPUP_LOSS_MM;
+  const G = 0.5;
+
+  const BLUE   = '#4A7CF7';
+  const ORANGE = '#F5A000';
+  const GREEN  = '#3DB97A';
+
+  type PD = { key: string; x: number; y: number; w: number; h: number; fill: string };
+  const pcs: PD[] = [];
+
+  if (wMm > 0 && dMm > 0) {
+    if (mode === "default") {
+      const cols = Math.floor(sheetW / pw), rows = Math.floor(sheetH / ph);
+      for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++)
+        pcs.push({ key:`${r}-${c}`, x:c*pw*scX+G, y:r*ph*scY+G, w:Math.max(0.5,pw*scX-G*2), h:Math.max(0.5,ph*scY-G*2), fill:BLUE });
+    } else if (mode === "rotated") {
+      const cols = Math.floor(sheetW / ph), rows = Math.floor(sheetH / pw);
+      for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++)
+        pcs.push({ key:`${r}-${c}`, x:c*ph*scX+G, y:r*pw*scY+G, w:Math.max(0.5,ph*scX-G*2), h:Math.max(0.5,pw*scY-G*2), fill:ORANGE });
+    } else {
+      const mC = Math.floor(sheetW / pw), mR = Math.floor(sheetH / ph);
+      for (let r = 0; r < mR; r++) for (let c = 0; c < mC; c++)
+        pcs.push({ key:`m${r}-${c}`, x:c*pw*scX+G, y:r*ph*scY+G, w:Math.max(0.5,pw*scX-G*2), h:Math.max(0.5,ph*scY-G*2), fill:BLUE });
+      const remW = sheetW - mC * pw;
+      const rC = Math.floor(remW / ph), rR = Math.floor(sheetH / pw);
+      for (let r = 0; r < rR; r++) for (let c = 0; c < rC; c++)
+        pcs.push({ key:`r${r}-${c}`, x:(mC*pw+c*ph)*scX+G, y:r*pw*scY+G, w:Math.max(0.5,ph*scX-G*2), h:Math.max(0.5,pw*scY-G*2), fill:GREEN });
+      const remH = sheetH - mR * ph;
+      const bC = Math.floor(mC * pw / ph), bR = Math.floor(remH / pw);
+      for (let r = 0; r < bR; r++) for (let c = 0; c < bC; c++)
+        pcs.push({ key:`b${r}-${c}`, x:c*ph*scX+G, y:(mR*ph+r*pw)*scY+G, w:Math.max(0.5,ph*scX-G*2), h:Math.max(0.5,pw*scY-G*2), fill:GREEN });
+    }
+  }
+
+  return (
+    <svg width={SVG_W} height={SVG_H} style={{display:'block', flexShrink:0}}>
+      <rect x={0} y={0} width={SVG_W} height={SVG_H} fill="#f8f8f8" stroke="#d8d8d8" strokeWidth={0.5} />
+      {pcs.map(p => <rect key={p.key} x={p.x} y={p.y} width={p.w} height={p.h} fill={p.fill} />)}
+    </svg>
+  );
+}
+
+/** i 아이콘 + hover 툴팁 */
+function IIcon({ tip }: { tip: string }) {
+  const [show, setShow] = useState(false);
+  return (
+    <span style={{position:'relative',display:'inline-flex',alignItems:'center',marginLeft:'4px',flexShrink:0}}>
+      <span
+        onMouseEnter={()=>setShow(true)}
+        onMouseLeave={()=>setShow(false)}
+        style={{
+          display:'inline-flex',alignItems:'center',justifyContent:'center',
+          width:'14px',height:'14px',borderRadius:'50%',
+          background:'#888',color:'#fff',fontSize:'9px',fontStyle:'italic',fontWeight:700,
+          cursor:'default',flexShrink:0,userSelect:'none',lineHeight:1,
+        }}>i</span>
+      {show && (
+        <span style={{
+          position:'absolute',left:'18px',top:'50%',transform:'translateY(-50%)',
+          background:'#1A1A1A',color:'#fff',fontSize:'11px',
+          padding:'6px 10px',whiteSpace:'nowrap',lineHeight:1.6,
+          zIndex:100,pointerEvents:'none',
+        }}>{tip}</span>
+      )}
+    </span>
+  );
+}
+
+export type MaterialEdgePreset = "none" | "abs1t" | "abs2t" | "paint" | "custom" | "edge45" | "curved";
 
 export type EdgeCustomSidesForm = { top: number; bottom: number; left: number; right: number };
 
@@ -92,6 +227,8 @@ export type MaterialFormState = {
   ruta2M: number;
   /** 테노너 가공 길이 (mm) */
   tenonerMm: number;
+  /** 곱면 수동 가공 길이 (mm) */
+  curvedManualMm: number;
 };
 
 type SheetRow = {
@@ -144,23 +281,20 @@ const DEFAULT_EDGE_SIDES: EdgeCustomSidesForm = { top: 0, bottom: 0, left: 0, ri
 
 /** 구버전 저장분(edgeProfileKey) → 프리셋 */
 function migrateEdgePreset(form: { edgePreset?: MaterialEdgePreset; edgeProfileKey?: string }): MaterialEdgePreset {
-  if (form.edgePreset === "custom") return "abs1t";
-  if (form.edgePreset) return form.edgePreset;
+  const valid: MaterialEdgePreset[] = ["none","abs1t","abs2t","paint","custom","edge45","curved"];
+  if (form.edgePreset && valid.includes(form.edgePreset)) return form.edgePreset;
   const k = form.edgeProfileKey?.trim() ?? "";
   if (!k) return "none";
   if (k === "4면 ABS 2T") return "abs2t";
   return "abs1t";
 }
 
-function normalizeBoardSurface(form: { boardMaterial?: string; surfaceMaterial?: string }): {
+function normalizeBoardSurface(_form: { boardMaterial?: string; surfaceMaterial?: string }): {
   boardMaterial: string;
   surfaceMaterial: string;
 } {
-  const bm = form.boardMaterial ?? "";
-  const board = (["PB", "SPB", "MDF"] as const).includes(bm as "PB" | "SPB" | "MDF") ? bm : "PB";
-  const sm = form.surfaceMaterial ?? "";
-  const surface = sm || "LPM/O";
-  return { boardMaterial: board, surfaceMaterial: surface };
+  // 소재/표면재는 PB/LPM-O로 고정
+  return { boardMaterial: "PB", surfaceMaterial: "LPM/O" };
 }
 
 /** 임시저장/불러오기 시 변경 여부 판별용 */
@@ -198,6 +332,7 @@ function serializeMaterialState(id: string | null, f: MaterialFormState): string
     edge45PaintM: f.edge45PaintM,
     ruta2M: f.ruta2M,
     tenonerMm: f.tenonerMm,
+    curvedManualMm: f.curvedManualMm ?? 0,
   });
 }
 
@@ -225,13 +360,22 @@ function isBlankNewMaterial(id: string | null, f: MaterialFormState): boolean {
 function edgePresetToBom(preset: MaterialEdgePreset): { edgeType: string; edgeSetting: string } {
   if (preset === "abs1t") return { edgeType: "ABS", edgeSetting: "4면 1T" };
   if (preset === "abs2t") return { edgeType: "ABS", edgeSetting: "4면 2T" };
-  if (preset === "paint") return { edgeType: "도장", edgeSetting: "" };
+  if (preset === "custom") return { edgeType: "ABS", edgeSetting: "사용자" };
+  if (preset === "paint")  return { edgeType: "도장", edgeSetting: "" };
+  if (preset === "edge45") return { edgeType: "45도", edgeSetting: "" };
+  if (preset === "curved") return { edgeType: "곱면", edgeSetting: "" };
   return { edgeType: "없음", edgeSetting: "" };
 }
 
 function bomToEdgePreset(edgeType: string, edgeSetting: string): MaterialEdgePreset {
-  if (edgeType === "ABS") return edgeSetting === "4면 2T" ? "abs2t" : "abs1t";
+  if (edgeType === "ABS") {
+    if (edgeSetting === "4면 2T") return "abs2t";
+    if (edgeSetting === "사용자") return "custom";
+    return "abs1t";
+  }
   if (edgeType === "도장") return "paint";
+  if (edgeType === "45도") return "edge45";
+  if (edgeType === "곱면") return "curved";
   return "none";
 }
 
@@ -268,6 +412,7 @@ function defaultForm(): MaterialFormState {
     edge45PaintM: 0,
     ruta2M: 0,
     tenonerMm: 0,
+    curvedManualMm: 0,
   };
 }
 
@@ -327,7 +472,15 @@ export const MaterialTab = forwardRef<
   const [, setDimKey] = useState(0);
   /** 추가된 가공 항목 목록 (UI 전용) */
   const [addedProcs, setAddedProcs] = useState<string[]>([]);
-  const [edTab, setEdTab] = useState<0|1|2>(0);
+  const [showBoardPopup, setShowBoardPopup] = useState(false);
+  const [popupSelRI, setPopupSelRI] = useState(0); // 0=정방향, 1=90°, 2=혼합
+  const [popupSelSI, setPopupSelSI] = useState(1); // 0=4x6, 1=4x8, 2=6x8
+  const [showProcDropdown, setShowProcDropdown] = useState(false);
+  /** 팝업 열 인라인 편집 상태 */
+  const [popupEditSI, setPopupEditSI] = useState<number | null>(null);
+  const [popupEditPrice, setPopupEditPrice] = useState('');
+  const [popupEditCode, setPopupEditCode] = useState('');
+  const [popupCustomCodes, setPopupCustomCodes] = useState<Record<string, string>>({});
   const [, setMsg] = useState<string | null>(null);
   /** 마지막으로 서버/불러오기와 일치한다고 본 스냅샷 */
   const savedRef = useRef(serializeMaterialState(null, defaultForm()));
@@ -337,6 +490,7 @@ export const MaterialTab = forwardRef<
   editingIdRef.current = editingId;
   const onQuoteEntityRebindRef = useRef(onQuoteEntityRebind);
   onQuoteEntityRebindRef.current = onQuoteEntityRebind;
+  const procDropdownRef = useRef<HTMLDivElement>(null);
 
   /** 저장/임시저장용 — 이름 포함 전체 폼 */
   const saveBody = useMemo(() => ({ ...form }), [form]);
@@ -371,6 +525,7 @@ export const MaterialTab = forwardRef<
       edge45PaintM: form.edge45PaintM,
       ruta2M: form.ruta2M,
       tenonerMm: form.tenonerMm,
+      curvedManualMm: form.curvedManualMm ?? 0,
     }),
     [
       form.wMm,
@@ -400,6 +555,7 @@ export const MaterialTab = forwardRef<
       form.edge45PaintM,
       form.ruta2M,
       form.tenonerMm,
+      form.curvedManualMm,
     ]
   );
 
@@ -481,7 +637,8 @@ export const MaterialTab = forwardRef<
         edgePreset: migrateEdgePreset(raw),
         edgeCustomSides: raw.edgeCustomSides ?? { ...DEFAULT_EDGE_SIDES },
         edgeSides: raw.edgeSides ?? { ...DEFAULT_EDGE_SELECTION },
-        edgeColor: "WW",
+        color: "WW",      // 패널 색상 고정
+        edgeColor: "WW",  // 엣지 색상 고정
         tenonerMm: (saved as { tenonerMm?: number }).tenonerMm ?? 0,
         boring1Ea: (saved as { boring1Ea?: number }).boring1Ea ?? (raw as { boringEa?: number }).boringEa ?? 0,
         boring2Ea: (saved as { boring2Ea?: number }).boring2Ea ?? 0,
@@ -489,15 +646,28 @@ export const MaterialTab = forwardRef<
         edge45TapingM: (saved as { edge45TapingM?: number }).edge45TapingM ?? (raw as { edge45M?: number }).edge45M ?? 0,
         edge45PaintType: (saved as { edge45PaintType?: string }).edge45PaintType ?? "",
         edge45PaintM: (saved as { edge45PaintM?: number }).edge45PaintM ?? 0,
+        curvedManualMm: (saved as { curvedManualMm?: number }).curvedManualMm ?? 0,
       };
+      // addedProcs: only user-addable processing items (edge types now handled by edgePreset)
       const restoredProcs: string[] = [];
+      if ((nextForm.formingM ?? 0) > 0) restoredProcs.push("forming");
       if ((nextForm.rutaM ?? 0) > 0) restoredProcs.push("ruta");
       if ((nextForm.ruta2M ?? 0) > 0) restoredProcs.push("ruta2");
-      if ((nextForm.formingM ?? 0) > 0) restoredProcs.push("forming");
-      if (nextForm.edge45PaintType || (nextForm.edge45PaintM ?? 0) > 0) restoredProcs.push("edgePaint");
-      if ((nextForm.edge45TapingM ?? 0) > 0) restoredProcs.push("edge45");
-      if ((nextForm.curvedEdgeM ?? 0) > 0) restoredProcs.push("curved");
       if ((nextForm.tenonerMm ?? 0) > 0) restoredProcs.push("tenoner");
+
+      // 두께 정수화 — 15.5/18.5/22.5/28.5 같은 STP 실측값을 사용자 표시 통일 (15T/18T/22T/28T)
+      if (nextForm.hMm > 0 && !Number.isInteger(nextForm.hMm)) {
+        nextForm.hMm = Math.floor(nextForm.hMm);
+      }
+
+      // sheetPrices 자동 보완 — 빈 객체였던 기존 자재 복구
+      const _hasPrices = nextForm.sheetPrices && Object.keys(nextForm.sheetPrices).length > 0;
+      if (!_hasPrices && nextForm.hMm > 0) {
+        const _p = SHEET_PRICE_BY_THICKNESS[nextForm.hMm] ?? {};
+        const _sp: Record<string, number> = {};
+        for (const sid of ALL_SHEET_IDS) if (_p[sid] != null) _sp[sid] = _p[sid]!;
+        nextForm.sheetPrices = _sp;
+      }
 
       // Merge from groot_bom node data if available (immediate-saved, may be fresher than StoredMaterial)
       // activeMatNodeId is not available here so use tree activeItem via ref
@@ -507,7 +677,8 @@ export const MaterialTab = forwardRef<
         const origHMm = nextForm.hMm;
         nextForm.wMm = bomData.w;
         nextForm.dMm = bomData.d;
-        nextForm.hMm = bomData.t;
+        // bomData.t 가 18.5 등 .5 단위면 정수로 통일 (사용자 표시 일관성)
+        nextForm.hMm = Number.isInteger(bomData.t) ? bomData.t : Math.floor(bomData.t);
         nextForm.boardMaterial = bomData.material;
         nextForm.surfaceMaterial = bomData.surface;
         nextForm.color = bomData.color;
@@ -522,7 +693,27 @@ export const MaterialTab = forwardRef<
           nextForm.sheetPrices = sp;
         }
         if (Array.isArray(bomData.processes) && bomData.processes.length > 0) {
-          finalProcs = [...bomData.processes];
+          const validKeys = ["forming","ruta","ruta2","tenoner"];
+          finalProcs = bomData.processes.filter((k: string) => validKeys.includes(k));
+        }
+      }
+
+      // edgeCustomSides 자동 복구 — bomData 가 모두 0 인 손상 상태도 보정
+      // (edgeSides 가 일부만 true 인 1면/2면/3면 경우, 그 면에 edgeT 두께값 부여)
+      {
+        const _ecs = nextForm.edgeCustomSides;
+        const _allZero = _ecs && [_ecs.top, _ecs.bottom, _ecs.left, _ecs.right].every((v) => !v);
+        const _es = nextForm.edgeSides;
+        const _someActive = _es && [_es.top, _es.bottom, _es.left, _es.right].some(Boolean);
+        const _notAll = _es && ![_es.top, _es.bottom, _es.left, _es.right].every(Boolean);
+        if (_allZero && _someActive && _notAll) {
+          const _t = nextForm.edgePreset === "abs2t" ? 2 : 1;
+          nextForm.edgeCustomSides = {
+            top:    _es.top    ? _t : 0,
+            bottom: _es.bottom ? _t : 0,
+            left:   _es.left   ? _t : 0,
+            right:  _es.right  ? _t : 0,
+          };
         }
       }
 
@@ -600,8 +791,12 @@ export const MaterialTab = forwardRef<
   onSaveRef.current = onSave;
 
   // Immediate BOM save: on every form/addedProcs change, save to groot_bom mat node
+  // 주의: loadMaterial 이 완료되기 전(editingId !== activeMatNodeId)에 발화하면
+  // 빈 defaultForm 으로 BOM 데이터를 덮어쓰는 race condition 발생.
+  // editingId 가 activeMatNodeId 와 일치할 때만 (= 해당 자재의 form 이 로드된 상태) 저장.
   useEffect(() => {
     if (!activeMatNodeId) return;
+    if (editingId !== activeMatNodeId) return;
     const { edgeType, edgeSetting } = edgePresetToBom(form.edgePreset);
     const data: BomMaterialData = {
       w: form.wMm,
@@ -617,7 +812,7 @@ export const MaterialTab = forwardRef<
     };
     putBomNodeData(activeMatNodeId, data);
     updateNodeData(activeMatNodeId, data);
-  }, [activeMatNodeId, form, addedProcs]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeMatNodeId, editingId, form, addedProcs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const quoteMode = Boolean(quoteBindEntityId);
 
@@ -704,7 +899,7 @@ export const MaterialTab = forwardRef<
       if (serializeMaterialState(id, f) === savedRef.current) return;
       if (isBlankNewMaterial(id, f)) return;
       void onSave(true, { banner: false });
-    }, quoteMode ? 800 : 1600);
+    }, quoteMode ? 300 : 1600);
     return () => clearTimeout(tid);
   }, [active, autoSaveKey, editingId, saveBody, onSave, quoteMode]);
 
@@ -764,262 +959,910 @@ export const MaterialTab = forwardRef<
   );
 
 
-  const sheetDisplayPrice = (id: string) =>
-    form.sheetPrices[id] ?? SHEET_PRICE_BY_THICKNESS[form.hMm]?.[id] ?? 0;
-
   const fmtWon = (n: number) => (n > 0 ? Math.ceil(n).toLocaleString() + "원" : "0원");
+
+  // V3: 3×3 board popup data (3 modes × 3 sheet sizes)
+  const boardAllData = useMemo(() => {
+    const MODES: Array<{ label: string; mode: "default" | "rotated" | "mixed" }> = [
+      { label: "정방향", mode: "default" },
+      { label: "90°",   mode: "rotated" },
+      { label: "혼합",  mode: "mixed"   },
+    ];
+    return MODES.map((m, ri) =>
+      SHEET_SPECS.map((s, si) => {
+        const price = form.sheetPrices[s.id] ?? SHEET_PRICE_BY_THICKNESS[form.hMm]?.[s.id] ?? 0;
+        const pieces = piecesPerSheet(s.widthMm, s.heightMm, form.wMm, form.dMm, m.mode);
+        const yieldPct = yieldPercent(pieces, s.widthMm, s.heightMm, form.wMm, form.dMm);
+        const unitPrice = pieces > 0 ? Math.ceil(price / pieces) : 0;
+        return { ri, si, label: m.label, mode: m.mode, sheetId: s.id, sheetLabel: s.label, pieces, yieldPct, unitPrice, sheetPrice: price };
+      })
+    );
+  }, [form.wMm, form.dMm, form.hMm, form.sheetPrices]);
+
+  const flatCells = useMemo(() => boardAllData.flat().filter(c => c.pieces > 0), [boardAllData]);
+  const maxYieldPct = useMemo(() => flatCells.length > 0 ? Math.max(...flatCells.map(c => c.yieldPct)) : 0, [flatCells]);
+  // The bar shows the user-selected sheet, or auto-recommends highest yield
+  const barData = useMemo(() => {
+    const EPS = 0.01;
+    if (form.selectedSheetId) {
+      const si = SHEET_SPECS.findIndex(s => s.id === form.selectedSheetId);
+      const ri = form.placementMode === "rotated" ? 1 : form.placementMode === "mixed" ? 2 : 0;
+      const cell = boardAllData[ri]?.[si >= 0 ? si : 0];
+      if (cell && cell.pieces > 0) return cell;
+    }
+    return flatCells.find(c => c.yieldPct >= maxYieldPct - EPS) ?? null;
+  }, [form.selectedSheetId, form.placementMode, boardAllData, flatCells, maxYieldPct]);
+
+  // 팝업 전용 계산 (POPUP_LOSS_MM=4)
+  const popupAllData = useMemo(() => {
+    const MODES: Array<{ label: string; mode: "default" | "rotated" | "mixed" }> = [
+      { label: "정방향", mode: "default" },
+      { label: "90°",   mode: "rotated" },
+      { label: "혼합",  mode: "mixed"   },
+    ];
+    return MODES.map((m, ri) =>
+      SHEET_SPECS.map((s, si) => {
+        const price = form.sheetPrices[s.id] ?? SHEET_PRICE_BY_THICKNESS[form.hMm]?.[s.id] ?? 0;
+        const pw = form.wMm + POPUP_LOSS_MM, ph = form.dMm + POPUP_LOSS_MM;
+        let count = 0;
+        if (form.wMm > 0 && form.dMm > 0) {
+          if (m.mode === "default") count = Math.floor(s.widthMm/pw) * Math.floor(s.heightMm/ph);
+          else if (m.mode === "rotated") count = Math.floor(s.widthMm/ph) * Math.floor(s.heightMm/pw);
+          else {
+            const mC = Math.floor(s.widthMm/pw), mR = Math.floor(s.heightMm/ph);
+            const right = Math.floor((s.widthMm-mC*pw)/ph) * Math.floor(s.heightMm/pw);
+            const bottom = Math.floor((mC*pw)/ph) * Math.floor((s.heightMm-mR*ph)/pw);
+            count = mC*mR + right + bottom;
+          }
+        }
+        const yieldPct = count > 0 ? count*pw*ph/(s.widthMm*s.heightMm)*100 : 0;
+        const unitPrice = count > 0 ? Math.ceil(price/count) : 0;
+        return { ri, si, label:m.label, mode:m.mode, sheetId:s.id, sheetLabel:s.label,
+                 sheetW:s.widthMm, sheetH:s.heightMm, count, yieldPct, unitPrice, sheetPrice:price };
+      })
+    );
+  }, [form.wMm, form.dMm, form.hMm, form.sheetPrices]);
+
+  const popupFlatCells = useMemo(() => popupAllData.flat().filter(c => c.count > 0), [popupAllData]);
+  const popupMaxYield  = useMemo(() => popupFlatCells.length > 0 ? Math.max(...popupFlatCells.map(c => c.yieldPct)) : 0, [popupFlatCells]);
+  const popupMinPrice  = useMemo(() => popupFlatCells.length > 0 ? Math.min(...popupFlatCells.map(c => c.unitPrice)) : Infinity, [popupFlatCells]);
+
+  const openBoardPopup = useCallback(() => {
+    if (form.selectedSheetId) {
+      const si = SHEET_SPECS.findIndex(s => s.id === form.selectedSheetId);
+      const ri = form.placementMode === "rotated" ? 1 : form.placementMode === "mixed" ? 2 : 0;
+      setPopupSelRI(ri >= 0 ? ri : 0); setPopupSelSI(si >= 0 ? si : 1);
+    } else {
+      const EPS = 0.01;
+      const best = popupFlatCells.find(c => c.yieldPct >= popupMaxYield - EPS);
+      setPopupSelRI(best?.ri ?? 0); setPopupSelSI(best?.si ?? 1);
+    }
+    // 커스텀 코드 localStorage 복원
+    try {
+      const lsKey = `groot-sheet-codes-${editingIdRef.current ?? '_new'}`;
+      const saved = localStorage.getItem(lsKey);
+      setPopupCustomCodes(saved ? (JSON.parse(saved) as Record<string, string>) : {});
+    } catch { setPopupCustomCodes({}); }
+    setPopupEditSI(null);
+    setShowBoardPopup(true);
+  }, [form.selectedSheetId, form.placementMode, popupFlatCells, popupMaxYield]);
+
+  // BOM 트리 이름 변경 시 form.name 실시간 동기화
+  const activeNodeName =
+    activeItem !== null &&
+    treeNodes[activeItem]?.type === "mat" &&
+    treeNodes[activeItem]?.id === editingId
+      ? (treeNodes[activeItem]?.name ?? "")
+      : undefined;
+
+  useEffect(() => {
+    if (activeNodeName === undefined || !editingId) return;
+    setForm((f) => {
+      if (f.name === activeNodeName) return f;
+      return { ...f, name: activeNodeName };
+    });
+  }, [activeNodeName, editingId]);
+
+  const saveBoardSel = useCallback(() => {
+    const modeKey: "default" | "rotated" | "mixed" = popupSelRI === 1 ? "rotated" : popupSelRI === 2 ? "mixed" : "default";
+    const sheetId = (["4x6", "4x8", "6x8"] as const)[popupSelSI as 0|1|2] ?? "4x8";
+    onGridSelect(sheetId, modeKey);
+    setShowBoardPopup(false);
+  }, [popupSelRI, popupSelSI, onGridSelect]);
+
+  // 가공 드롭다운 바깥 클릭 시 닫기 + 열릴 때 자동 포커스
+  useEffect(() => {
+    if (!showProcDropdown) return;
+    procDropdownRef.current?.focus();
+    const handler = (e: MouseEvent) => {
+      if (!procDropdownRef.current?.contains(e.target as Node)) {
+        setShowProcDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showProcDropdown]);
 
   return (
     <>
       <div style={{display:'flex',height:'100%',minHeight:0,width:'100%',overflow:'hidden'}}>
         <div className="editor-body">
-          {/* Left panel */}
-          <div className="editor-left">
-            <div className="ed-tabs">
-              <button type="button" className={`ed-tab${edTab===0?' on':''}`} onClick={()=>setEdTab(0)}>규격·사양</button>
-              <button type="button" className={`ed-tab${edTab===1?' on':''}`} onClick={()=>setEdTab(1)}>원장 배치</button>
-              <button type="button" className={`ed-tab${edTab===2?' on':''}`} onClick={()=>setEdTab(2)}>가공</button>
-            </div>
 
-            {/* Tab 0: 규격·사양 */}
-            <div className="ed-content" style={{display: edTab===0?'block':'none'}}>
-              <div className="sec-title mb10">기본 규격</div>
-              <div className="grid3 mb16">
-                <div>
-                  <div className="sl">W (mm)</div>
-                  <input className="fi" type="number" value={form.wMm||''}
-                    onChange={e=>onDimensionCommit({wMm:Number(e.target.value)||0,dMm:form.dMm,hMm:form.hMm})}
-                    placeholder="0" />
-                </div>
-                <div>
-                  <div className="sl">D (mm)</div>
-                  <input className="fi" type="number" value={form.dMm||''}
-                    onChange={e=>onDimensionCommit({wMm:form.wMm,dMm:Number(e.target.value)||0,hMm:form.hMm})}
-                    placeholder="0" />
-                </div>
-                <div>
-                  <div className="sl">두께 T</div>
-                  <input className="fi" type="number" value={form.hMm||''}
-                    onChange={e=>onDimensionCommit({wMm:form.wMm,dMm:form.dMm,hMm:Number(e.target.value)||0})}
-                    placeholder="0" />
-                </div>
-              </div>
+          {/* ── Left column: 토스 영수증 스타일 섹션 카드 ── */}
+          <div className="editor-left" style={{ fontFamily: "Pretendard, system-ui", letterSpacing: "-0.01em" }}>
+            <div className="ed-content" style={{padding:'0',overflowY:'auto'}}>
+              <div style={{maxWidth:'640px'}}>
 
-              <div className="sec-title mb10">소재</div>
-              <div className="grid3 mb16">
-                <div>
-                  <div className="sl">소재</div>
-                  <select className="fi" value={form.boardMaterial}
-                    onChange={e=>setForm(f=>({...f,boardMaterial:e.target.value}))}>
-                    <option>PB</option><option>SPB</option><option>MDF</option>
-                  </select>
-                </div>
-                <div>
-                  <div className="sl">표면재</div>
-                  <select className="fi" value={form.surfaceMaterial}
-                    onChange={e=>setForm(f=>({...f,surfaceMaterial:e.target.value}))}>
-                    <option>LPM/O</option><option>LPM/-</option><option>FF/-</option>
-                  </select>
-                </div>
-                <div>
-                  <div className="sl">색상</div>
-                  <select className="fi" value={form.color}
-                    onChange={e=>setForm(f=>({...f,color:e.target.value}))}>
-                    <option>WW</option><option>BI</option><option>OHN</option><option>NBK</option>
-                  </select>
-                </div>
-              </div>
+              {/* ── 섹션: 패널 ── */}
+              <section style={{padding:'20px 24px',borderBottom:'1px solid #F0F0F0'}}>
+                <div style={{fontSize:'11px',fontWeight:500,color:'#7E7E7E',letterSpacing:'0.05em',textTransform:'uppercase',marginBottom:'12px'}}>패널</div>
 
-              <div className="sec-title mb10">엣지 마감</div>
-              <div className="seg mb14">
-                <button type="button" className={`seg-btn${form.edgePreset==='none'?' on':''}`} onClick={()=>setForm(f=>({...f,edgePreset:'none'}))}>엣지 없음</button>
-                <button type="button" className={`seg-btn${(form.edgePreset==='abs1t'||form.edgePreset==='abs2t')?' on':''}`} onClick={()=>setForm(f=>({...f,edgePreset:'abs2t'}))}>ABS 엣지</button>
-                <button type="button" className={`seg-btn${form.edgePreset==='paint'?' on':''}`} onClick={()=>setForm(f=>({...f,edgePreset:'paint'}))}>엣지 도장</button>
-              </div>
-              {(form.edgePreset==='abs1t'||form.edgePreset==='abs2t'||(form.edgePreset as string)==='custom') && (
-                <div>
-                  <div className="sl" style={{marginBottom:'6px'}}>엣지 설정</div>
-                  <div className="seg mb10">
-                    <button type="button" className="seg-btn" onClick={()=>setForm(f=>({...f,edgePreset:'none'}))}>엣지 없음</button>
-                    <button type="button" className={`seg-btn${form.edgePreset==='abs1t'?' on':''}`} onClick={()=>setForm(f=>({...f,edgePreset:'abs1t'}))}>4면 1T</button>
-                    <button type="button" className={`seg-btn${form.edgePreset==='abs2t'?' on':''}`} onClick={()=>setForm(f=>({...f,edgePreset:'abs2t'}))}>4면 2T</button>
-                    <button type="button" className={`seg-btn${(form.edgePreset as string)==='custom'?' on':''}`} onClick={()=>setForm(f=>({...f,edgePreset:'custom' as MaterialEdgePreset}))}>사용자 설정</button>
+                {/* W / D / H(T) */}
+                <div style={{display:'flex',gap:'12px',marginBottom:'12px'}}>
+                  <div style={{flex:1}}>
+                    <label style={{display:'block',fontSize:'12px',color:'#616161',marginBottom:'6px'}}>W (mm)</label>
+                    <input className="fi" type="number" value={form.wMm||''} placeholder="0"
+                      onChange={e=>onDimensionCommit({wMm:Number(e.target.value)||0,dMm:form.dMm,hMm:form.hMm})} />
                   </div>
-                  {(form.edgePreset as string)==='custom' && (
-                    <div className="edge-custom show">
-                      <div className="face-grid">
-                        {(['top','bottom','left','right'] as const).map((side,i)=>(
-                          <div key={side} className="face-col">
-                            <div className="face-col-label">{['상','하','좌','우'][i]}</div>
-                            <div className="face-col-mm">{(i<2?form.wMm:form.dMm)+'mm'}</div>
-                            <input className="t-inp" type="number" value={form.edgeCustomSides[side]||0}
-                              onChange={e=>setForm(f=>({...f,edgeCustomSides:{...f.edgeCustomSides,[side]:Number(e.target.value)||0}}))} />
-                            <div className="t-unit">T</div>
-                          </div>
-                        ))}
-                      </div>
-                      <div style={{fontSize:'10px',color:'#bbb',marginTop:'8px'}}>0 입력 시 해당 면 엣지 없음</div>
+                  <div style={{flex:1}}>
+                    <label style={{display:'block',fontSize:'12px',color:'#616161',marginBottom:'6px'}}>D (mm)</label>
+                    <input className="fi" type="number" value={form.dMm||''} placeholder="0"
+                      onChange={e=>onDimensionCommit({wMm:form.wMm,dMm:Number(e.target.value)||0,hMm:form.hMm})} />
+                  </div>
+                  <div style={{flex:1}}>
+                    <label style={{display:'block',fontSize:'12px',color:'#616161',marginBottom:'6px'}}>H (T)</label>
+                    <input className="fi" type="number" value={form.hMm||''} placeholder="0"
+                      onChange={e=>onDimensionCommit({wMm:form.wMm,dMm:form.dMm,hMm:Number(e.target.value)||0})} />
+                  </div>
+                </div>
+
+                {/* 소재 / 표면재 / 색상 — 고정 (데스커 비활성 스타일) */}
+                {(()=>{
+                  const fixedCell = (label: string, val: string) => (
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:'12px',color:'#616161',marginBottom:'6px'}}>{label}</div>
+                      <div style={{
+                        height:'36px',display:'flex',alignItems:'center',padding:'0 12px',
+                        background:'#F0F0F0',border:'1px solid #F0F0F0',borderRadius:'4px',
+                        fontSize:'14px',color:'#616161',userSelect:'none',cursor:'not-allowed',
+                      }}>{val}</div>
                     </div>
-                  )}
+                  );
+                  return (
+                    <div style={{display:'flex',gap:'12px',marginBottom:'14px'}}>
+                      {fixedCell('소재', 'PB')}
+                      {fixedCell('표면재', 'LPM/O')}
+                      {fixedCell('색상', 'WW')}
+                    </div>
+                  );
+                })()}
+
+                {/* 원장 선택 카드 (토스 스타일) */}
+                <div
+                  onClick={openBoardPopup}
+                  onMouseEnter={(e)=>{(e.currentTarget as HTMLDivElement).style.background='#E8E8E8'}}
+                  onMouseLeave={(e)=>{(e.currentTarget as HTMLDivElement).style.background='#F0F0F0'}}
+                  style={{
+                    display:'flex',alignItems:'center',justifyContent:'space-between',
+                    padding:'12px 16px',background:'#F0F0F0',border:'1px solid #F0F0F0',
+                    borderRadius:'4px',cursor:'pointer',transition:'background .15s',
+                  }}>
+                  <div>
+                    <div style={{fontSize:'13px',fontWeight:600,color:'#282828'}}>
+                      {barData
+                        ? <>{barData.sheetLabel} 원장 · {barData.label} 배치 <span style={{color:'#7E7E7E',fontWeight:500}}>({barData.yieldPct.toFixed(1)}%)</span></>
+                        : '원장 미선택'}
+                    </div>
+                    <div style={{fontSize:'11px',color:'#7E7E7E',marginTop:'2px'}}>목재 패널 자재비</div>
+                  </div>
+                  <div style={{display:'flex',alignItems:'center',gap:'10px',flexShrink:0}}>
+                    <span style={{fontSize:'14px',fontWeight:700,color:'#282828',fontFeatureSettings:"'tnum' 1"}}>
+                      {barData ? fmtWon(barData.unitPrice) : '—'}
+                    </span>
+                    <span style={{fontSize:'11px',color:'#7E7E7E'}}>변경 ›</span>
+                  </div>
                 </div>
-              )}
-            </div>
+              </section>
 
-            {/* Tab 1: 원장 배치 */}
-            <div className="ed-content" style={{display: edTab===1?'flex':'none', flexDirection:'column', padding:'12px 16px 16px', overflow:'auto'}}>
-              <YieldBoardGrid
-                wMm={form.wMm}
-                dMm={form.dMm}
-                boardMaterial={form.boardMaterial}
-                sheetPriceBySheetId={
-                  Object.fromEntries(
-                    ALL_SHEET_IDS.map(id => [id, sheetDisplayPrice(id)])
-                  )
-                }
-                selectedKey={
-                  form.selectedSheetId
-                    ? `${form.selectedSheetId}|${form.placementMode}`
-                    : null
-                }
-                onSelect={onGridSelect}
-              />
-            </div>
+              {/* ── 섹션: 엣지 ── */}
+              <section style={{padding:'20px 24px',borderBottom:'1px solid #F0F0F0'}}>
+                <div style={{fontSize:'11px',fontWeight:500,color:'#7E7E7E',letterSpacing:'0.05em',textTransform:'uppercase',marginBottom:'12px'}}>엣지</div>
+                <div style={{fontSize:'12px',color:'#616161',marginBottom:'6px'}}>사양</div>
 
-            {/* Tab 2: 가공 */}
-            <div className="ed-content" style={{display: edTab===2?'block':'none'}}>
-              <div className="sec-title mb10">가공비 입력</div>
-              <div className="proc-row">
-                <span className="pn">세척비</span>
-                <span className="pr">{((form.wMm*form.dMm)/1000000*2*250).toFixed(0)}원 (자동)</span>
-                <input className="pi" type="number" value={form.washM2||0}
-                  onChange={e=>setForm(f=>({...f,washM2:Number(e.target.value)||0}))} />
-                <span className="pu">m²</span>
-                <span className={`pp${(!computed?.washCostWon)?' z':''}`}>{fmtWon(computed?.washCostWon??0)}</span>
-              </div>
-              <div className="proc-row">
-                <span className="pn">일반 보링</span>
-                <span className="pr">100원/개</span>
-                <input className="pi" type="number" value={form.boring1Ea||0}
-                  onChange={e=>setForm(f=>({...f,boring1Ea:Number(e.target.value)||0}))} />
-                <span className="pu">개</span>
-                <span className={`pp${(!computed?.boring1CostWon)?' z':''}`}>{fmtWon(computed?.boring1CostWon??0)}</span>
-              </div>
-              <div className="proc-row">
-                <span className="pn">2단 보링</span>
-                <span className="pr">50원/개</span>
-                <input className="pi" type="number" value={form.boring2Ea||0}
-                  onChange={e=>setForm(f=>({...f,boring2Ea:Number(e.target.value)||0}))} />
-                <span className="pu">개</span>
-                <span className={`pp${(!computed?.boring2CostWon)?' z':''}`}>{fmtWon(computed?.boring2CostWon??0)}</span>
-              </div>
-              {addedProcs.map(key=>{
-                if(key==='ruta') return (
-                  <div key="ruta" className="proc-row">
-                    <span className="pn">루타 가공</span>
-                    <span className="pr">2,000원/m</span>
-                    <input className="pi" type="number" value={Math.round(form.rutaM*1000)||0}
-                      onChange={e=>setForm(f=>({...f,rutaM:(Number(e.target.value)||0)/1000}))} />
-                    <span className="pu">mm</span>
-                    <span className={`pp${(!computed?.rutaCostWon)?' z':''}`}>{fmtWon(computed?.rutaCostWon??0)}</span>
-                  </div>
-                );
-                if(key==='forming') return (
-                  <div key="forming" className="proc-row">
-                    <span className="pn">포밍</span>
-                    <span className="pr">1,000원/m</span>
-                    <input className="pi" type="number" value={Math.round(form.formingM*1000)||0}
-                      onChange={e=>setForm(f=>({...f,formingM:(Number(e.target.value)||0)/1000}))} />
-                    <span className="pu">mm</span>
-                    <span className={`pp${(!computed?.formingCostWon)?' z':''}`}>{fmtWon(computed?.formingCostWon??0)}</span>
-                  </div>
-                );
-                return null;
-              })}
-              <button type="button" className="add-proc" onClick={()=>{
-                const opts=['ruta','forming','ruta2','tenoner','edgePaint','edge45','curved'];
-                const avail=opts.filter(k=>!addedProcs.includes(k));
-                if(avail.length) setAddedProcs(p=>[...p,avail[0]]);
-              }}>+ 가공 추가하기</button>
-            </div>
-          </div>
-
-          {/* Right panel: receipt */}
-          <div className="editor-right">
-            <div className="rcpt-panel">
-              <div className="rcpt-name">{form.name||'이름 없음'}</div>
-              <div className="rcpt-total">{computed?fmtWon(form.hMm>0?computed.grandTotalWon:computed.processingTotalWon):'—'}</div>
-
-              <div className="rsec">원재료비</div>
-              {(() => {
-                const matCost  = computed?.materialCostWon ?? 0;
-                const edgeCost = computed?.edgeCostWon ?? 0;
-                const hmCost   = computed?.hotmeltCostWon ?? 0;
+              {/* 사양 토글: 없음 / ABS / 도장(비활성) / 45도(비활성) / 곡면(비활성) */}
+              {(()=>{
+                const TABS = [
+                  { id:'none',   label:'없음', disabled:false },
+                  { id:'abs',    label:'ABS',  disabled:false },
+                  { id:'paint',  label:'도장', disabled:true  },
+                  { id:'edge45', label:'45도', disabled:true  },
+                  { id:'curved', label:'곡면', disabled:true  },
+                ] as const;
+                const activeTab =
+                  form.edgePreset==='none' ? 'none'
+                  : (form.edgePreset==='abs1t'||form.edgePreset==='abs2t'||form.edgePreset==='custom') ? 'abs'
+                  : form.edgePreset==='paint' ? 'paint'
+                  : form.edgePreset==='edge45' ? 'edge45'
+                  : 'curved';
                 return (
-                  <>
-                    <div className={`rrow${matCost===0?' rrow--zero':''}`}>
-                      <span className="l">목재 원재료비<small>{form.wMm}×{form.dMm}×{form.hMm}T · {form.boardMaterial}, {form.surfaceMaterial}</small></span>
-                      <span className="r">{fmtWon(matCost)}</span>
-                    </div>
-                    <div className={`rrow${edgeCost===0?' rrow--zero':''}`}>
-                      <span className="l">엣지 원재료비<small>{form.edgePreset!=='none'?`4면 ${form.edgePreset==='abs2t'?'ABS 2T':'ABS 1T'}`:'없음'} · {computed?.edgeLengthM?.toFixed(2)?? '0.00'}m</small></span>
-                      <span className="r">{fmtWon(edgeCost)}</span>
-                    </div>
-                    <div className={`rrow${hmCost===0?' rrow--zero':''}`}>
-                      <span className="l">핫멜트<small>{form.hMm}T · {computed?.edgeLengthM?.toFixed(2)?? '0'}m</small></span>
-                      <span className="r">{fmtWon(hmCost)}</span>
-                    </div>
-                    <div className="rsub">
-                      <span>원재료비 합계</span>
-                      <span>{fmtWon(matCost+edgeCost+hmCost)}</span>
-                    </div>
-                  </>
+                  <div style={{display:'flex',border:'0.5px solid #e0e0e0',marginBottom:'8px'}}>
+                    {TABS.map(({id,label,disabled},i)=>{
+                      const isOn = id===activeTab;
+                      return (
+                        <button key={id} type="button"
+                          disabled={disabled}
+                          title={disabled ? '준비 중' : undefined}
+                          onClick={()=>{
+                            if (disabled) return;
+                            setForm(f=>({...f,edgePreset:
+                              id==='none'?'none':id==='abs'?'abs1t':'none'
+                            }));
+                          }}
+                          style={{
+                            flex:1, padding:'6px 0', fontSize:'11px',
+                            cursor: disabled ? 'not-allowed' : 'pointer',
+                            border: 'none',
+                            color: disabled ? '#ccc' : isOn ? '#fff' : '#888',
+                            background: isOn && !disabled ? '#1A1A1A' : '#fff',
+                            borderRight: i<TABS.length-1 ? '0.5px solid #e0e0e0' : 'none',
+                            opacity: disabled ? 0.45 : 1,
+                          }}>
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
                 );
               })()}
 
-              <div className="rdiv" />
-
-              <div className="rsec">가공비</div>
-              {(() => {
-                const cutCost  = computed?.cuttingCostWon ?? 0;
-                const borCost  = (computed?.boring1CostWon??0)+(computed?.boring2CostWon??0);
-                const washCost = computed?.washCostWon ?? 0;
+              {/* ABS: 4면 1T / 4면 2T / 사용자 설정 */}
+              {(form.edgePreset==='abs1t'||form.edgePreset==='abs2t'||form.edgePreset==='custom') && (()=>{
+                const absWidth = THICK_TO_ABS_WIDTH[form.hMm];
+                const can2T    = hasAbs2T(form.hMm);
+                // 현재 프리셋 기준 대표 자재코드
+                const repTVal: 1|2 = form.edgePreset==='abs2t' ? 2 : 1;
+                const repCode = absWidth ? ABS_CODE[absWidth]?.[repTVal] : undefined;
                 return (
-                  <>
-                    <div className={`rrow${cutCost===0?' rrow--zero':''}`}>
-                      <span className="l">재단<small>{computed?.cuttingPlacementCount??0}개</small></span>
-                      <span className="r">{fmtWon(cutCost)}</span>
+                  <div style={{marginBottom:'8px'}}>
+                    <div style={{fontSize:'11px',color:'#555',marginBottom:'3px'}}>규격</div>
+                    <div style={{display:'flex',border:'0.5px solid #e0e0e0',marginBottom:'6px'}}>
+                      {([
+                        {v:'abs1t' as MaterialEdgePreset, lbl:'4면 1T',  disabled:false},
+                        {v:'abs2t' as MaterialEdgePreset, lbl:'4면 2T',  disabled:!can2T},
+                        {v:'custom' as MaterialEdgePreset, lbl:'사용자 설정', disabled:false},
+                      ]).map(({v,lbl,disabled},i,arr)=>(
+                        <button key={v} type="button"
+                          disabled={disabled}
+                          title={disabled ? '해당 두께는 2T ABS 없음' : undefined}
+                          onClick={()=>{ if(!disabled) setForm(f=>({...f, edgePreset:v, edgeColor:'WW'})); }}
+                          style={{
+                            flex:1, padding:'6px 0', fontSize:'11px',
+                            cursor: disabled?'not-allowed':'pointer',
+                            border:'none',
+                            color: disabled ? '#ccc' : form.edgePreset===v ? '#fff' : '#888',
+                            background: form.edgePreset===v && !disabled ? '#1A1A1A' : '#fff',
+                            borderRight: i<arr.length-1 ? '0.5px solid #e0e0e0' : 'none',
+                            opacity: disabled ? 0.5 : 1,
+                          }}>
+                          {lbl}
+                        </button>
+                      ))}
                     </div>
-                    <div className="rrow rrow--zero">
-                      <span className="l">엣지 접착비<small>버밍·핫멜트 구간</small></span>
-                      <span className="r">{fmtWon(0)}</span>
-                    </div>
-                    <div className={`rrow${borCost===0?' rrow--zero':''}`}>
-                      <span className="l">보링류<small>일반 {form.boring1Ea} / 2단 {form.boring2Ea}</small></span>
-                      <span className="r">{fmtWon(borCost)}</span>
-                    </div>
-                    {washCost>0 && (
-                      <div className="rrow">
-                        <span className="l">세척비</span>
-                        <span className="r">{fmtWon(washCost)}</span>
+
+                    {/* 사용자 설정: 면별 T값 선택 */}
+                    {form.edgePreset==='custom' && (
+                      <div style={{marginBottom:'6px'}}>
+                        <div style={{display:'flex',gap:'8px',marginBottom:'4px'}}>
+                          {(['top','bottom','left','right'] as const).map((side,i)=>{
+                            const label = ['상 T','하 T','좌 T','우 T'][i];
+                            const val   = form.edgeCustomSides[side] ?? 0;
+                            const w50m  = (i < 2 ? form.wMm : form.dMm) + 50;
+                            const tv    = val as 0|1|2;
+                            const sideRate = (tv === 2 && absWidth) ? (ABS_PRICE[absWidth]?.[2] ?? 0)
+                                           : (tv === 1 && absWidth) ? (ABS_PRICE[absWidth]?.[1] ?? 0) : 0;
+                            const sideCost = tv > 0 ? (w50m / 1000) * sideRate : 0;
+                            return (
+                              <div key={side} style={{flex:1,display:'flex',flexDirection:'column'}}>
+                                <div style={{fontSize:'11px',color:'#555',marginBottom:'3px'}}>{label}</div>
+                                <select
+                                  className="fi"
+                                  value={val}
+                                  style={{height:'30px',fontSize:'12px'}}
+                                  onChange={e=>setForm(f=>({...f,edgeCustomSides:{...f.edgeCustomSides,[side]:Number(e.target.value)}}))}
+                                >
+                                  <option value={0}>없음</option>
+                                  <option value={1}>1T</option>
+                                  <option value={2} disabled={!can2T}>2T</option>
+                                </select>
+                                {tv > 0 && (
+                                  <div style={{fontSize:'10px',color:'#969696',marginTop:'2px'}}>
+                                    {sideCost > 0 ? `${Math.round(sideCost).toLocaleString()}원` : '—'}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {/* 사용자 설정 면별 자재코드 */}
+                        {(['top','bottom','left','right'] as const).map((side,i)=>{
+                          const tv = (form.edgeCustomSides[side] ?? 0) as 1|2;
+                          if (!tv) return null;
+                          const sideCode = absWidth ? ABS_CODE[absWidth]?.[tv] : undefined;
+                          if (!sideCode) return null;
+                          const lbl = ['상','하','좌','우'][i];
+                          return (
+                            <div key={side} style={{fontSize:'10px',color:'#969696',fontFamily:'monospace',marginBottom:'1px'}}>
+                              {lbl} · {sideCode}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
-                    <div className="rsub">
-                      <span>가공비 합계</span>
-                      <span>{fmtWon(computed?.processingTotalWon??0)}</span>
+
+                    {/* 색상 + 자재코드 — WW 고정 */}
+                    {form.edgePreset !== 'custom' && (
+                      <div>
+                        <div style={{fontSize:'11px',color:'#555',marginBottom:'3px'}}>색상</div>
+                        <div style={{
+                          height:'30px',display:'flex',alignItems:'center',padding:'0 8px',
+                          background:'#f4f4f4',border:'0.5px solid #e0e0e0',
+                          fontSize:'12px',color:'#888',userSelect:'none',
+                        }}>WW</div>
+                        {repCode && (
+                          <div style={{fontSize:'10px',color:'#969696',marginTop:'3px',fontFamily:'monospace'}}>{repCode}</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* 도장: 6가지 방식 토글 */}
+              {form.edgePreset==='paint' && (
+                <div style={{marginBottom:'8px'}}>
+                  {PAINT_OPTIONS.map(({key,rate})=>{
+                    const isOn = form.edge45PaintType===key;
+                    return (
+                      <div key={key} onClick={()=>setForm(f=>({...f,edge45PaintType:key}))}
+                        style={{
+                          display:'flex',justifyContent:'space-between',alignItems:'center',
+                          padding:'7px 10px',marginBottom:'3px',cursor:'pointer',
+                          border: isOn?'1.5px solid #1A1A1A':'0.5px solid #e8e8e8',
+                          background: isOn?'#1A1A1A':'#fff',
+                        }}>
+                        <span style={{fontSize:'12px',color:isOn?'#fff':'#1a1a1a'}}>{key}</span>
+                        <span style={{fontSize:'11px',color:isOn?'rgba(255,255,255,0.65)':'#969696'}}>{rate.toLocaleString()}원</span>
+                      </div>
+                    );
+                  })}
+                  {/* 색상 — WW 고정 */}
+                  <div style={{marginTop:'6px'}}>
+                    <div style={{fontSize:'11px',color:'#555',marginBottom:'3px'}}>색상</div>
+                    <div style={{
+                      height:'30px',display:'flex',alignItems:'center',padding:'0 8px',
+                      background:'#f4f4f4',border:'0.5px solid #e0e0e0',
+                      fontSize:'12px',color:'#888',userSelect:'none',
+                    }}>WW</div>
+                  </div>
+                </div>
+              )}
+
+              {/* 45도: mm 입력 */}
+              {form.edgePreset==='edge45' && (
+                <div style={{marginBottom:'8px'}}>
+                  <div style={{fontSize:'11px',color:'#555',marginBottom:'3px'}}>길이 (mm)</div>
+                  <div style={{display:'flex',alignItems:'center',gap:'3px',border:'0.5px solid #e0e0e0',height:'30px',padding:'0 8px',background:'#fff',width:'120px'}}>
+                    <input type="number" value={Math.round(form.edge45TapingM*1000)||0}
+                      onChange={e=>setForm(f=>({...f,edge45TapingM:(Number(e.target.value)||0)/1000}))}
+                      style={{border:'none',outline:'none',fontSize:'12px',width:'60px',background:'transparent',textAlign:'right',color:'#1a1a1a'}} />
+                    <span style={{fontSize:'10px',color:'#888'}}>mm</span>
+                  </div>
+                </div>
+              )}
+
+              {/* 곱면: 머시닝 + 수동곱면 */}
+              {form.edgePreset==='curved' && (
+                <div style={{marginBottom:'8px',display:'flex',gap:'10px'}}>
+                  <div style={{flex:1}}>
+                    <div style={{display:'flex',alignItems:'center',fontSize:'11px',color:'#555',marginBottom:'3px'}}>
+                      머시닝<IIcon tip="머시닝 곱면. m당 3,000원" />
+                    </div>
+                    <div style={{display:'flex',alignItems:'center',gap:'3px',border:'0.5px solid #e0e0e0',height:'30px',padding:'0 8px',background:'#fff'}}>
+                      <input type="number" value={Math.round(form.curvedEdgeM*1000)||0}
+                        onChange={e=>setForm(f=>({...f,curvedEdgeM:(Number(e.target.value)||0)/1000,curvedEdgeType:'machining'}))}
+                        style={{border:'none',outline:'none',fontSize:'12px',flex:1,background:'transparent',textAlign:'right',color:'#1a1a1a'}} />
+                      <span style={{fontSize:'10px',color:'#888'}}>mm</span>
+                    </div>
+                  </div>
+                  <div style={{flex:1}}>
+                    <div style={{display:'flex',alignItems:'center',fontSize:'11px',color:'#555',marginBottom:'3px'}}>
+                      수동곱면<IIcon tip="수동 곱면 작업. m당 2,000원" />
+                    </div>
+                    <div style={{display:'flex',alignItems:'center',gap:'3px',border:'0.5px solid #e0e0e0',height:'30px',padding:'0 8px',background:'#fff'}}>
+                      <input type="number" value={form.curvedManualMm||0}
+                        onChange={e=>setForm(f=>({...f,curvedManualMm:Number(e.target.value)||0}))}
+                        style={{border:'none',outline:'none',fontSize:'12px',flex:1,background:'transparent',textAlign:'right',color:'#1a1a1a'}} />
+                      <span style={{fontSize:'10px',color:'#888'}}>mm</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              </section>
+
+              {/* ── 섹션: 가공 ── */}
+              <section style={{padding:'20px 24px',borderBottom:'1px solid #F0F0F0'}}>
+                <div style={{fontSize:'11px',fontWeight:500,color:'#7E7E7E',letterSpacing:'0.05em',textTransform:'uppercase',marginBottom:'12px'}}>가공</div>
+
+              {/* 공통 가공 행 컴포넌트 스타일 */}
+              {(()=>{
+                const rowStyle: React.CSSProperties = {display:'flex',alignItems:'center',gap:'8px',padding:'6px 0',borderBottom:'0.5px solid #e8e8e8'};
+                const labelStyle: React.CSSProperties = {display:'flex',alignItems:'center',fontSize:'12px',color:'#1a1a1a',flex:1,minWidth:0};
+                const costStyle = (v: number): React.CSSProperties => ({fontSize:'12px',fontWeight:500,minWidth:'48px',textAlign:'right',color:v?'#1a1a1a':'#B0B0B0',flexShrink:0});
+                const numBox = {display:'flex',alignItems:'center',gap:'3px',border:'0.5px solid #e0e0e0',height:'26px',padding:'0 6px',background:'#fff',flexShrink:0 as const};
+                const numInput: React.CSSProperties = {border:'none',outline:'none',fontSize:'12px',width:'40px',background:'transparent',textAlign:'right',color:'#1a1a1a'};
+
+                return (
+                  <>
+                    {/* 일반 보링 */}
+                    <div style={rowStyle}>
+                      <div style={labelStyle}>일반 보링<IIcon tip="일반 돌입맞주기. 개당 100원" /></div>
+                      <div style={numBox}>
+                        <input type="number" value={form.boring1Ea||0}
+                          onChange={e=>setForm(f=>({...f,boring1Ea:Number(e.target.value)||0}))}
+                          style={numInput} />
+                        <span style={{fontSize:'10px',color:'#888'}}>개</span>
+                      </div>
+                      <span style={costStyle(computed?.boring1CostWon??0)}>{fmtWon(computed?.boring1CostWon??0)}</span>
+                    </div>
+
+                    {/* 2차 보링 */}
+                    <div style={rowStyle}>
+                      <div style={labelStyle}>2차 보링<IIcon tip="2단 돌입. 개당 50원" /></div>
+                      <div style={numBox}>
+                        <input type="number" value={form.boring2Ea||0}
+                          onChange={e=>setForm(f=>({...f,boring2Ea:Number(e.target.value)||0}))}
+                          style={numInput} />
+                        <span style={{fontSize:'10px',color:'#888'}}>개</span>
+                      </div>
+                      <span style={costStyle(computed?.boring2CostWon??0)}>{fmtWon(computed?.boring2CostWon??0)}</span>
+                    </div>
+
+                    {/* 철물 조립 */}
+                    <div style={rowStyle}>
+                      <div style={labelStyle}>철물 조립<IIcon tip="자재에 조립되어 출고되는 철물의 수. 케이싱, 케이싱 스크류 등. 조립비 개당 35원" /></div>
+                      <div style={numBox}>
+                        <input type="number" value={form.assemblyHours||0}
+                          onChange={e=>setForm(f=>({...f,assemblyHours:Number(e.target.value)||0}))}
+                          style={numInput} />
+                        <span style={{fontSize:'10px',color:'#888'}}>개</span>
+                      </div>
+                      <span style={costStyle(computed?.assemblyCostWon??0)}>{fmtWon(computed?.assemblyCostWon??0)}</span>
+                    </div>
+
+                    {/* 45도 엣지 선택 시 자동 추가: 테이핑 (읽기 전용) */}
+                    {form.edgePreset==='edge45' && (
+                      <div style={rowStyle}>
+                        <div style={labelStyle}>테이핑<IIcon tip="45도 엣지 테이핑. m당 500원" /></div>
+                        <span style={{fontSize:'10px',color:'#969696',flexShrink:0}}>45도 엣지</span>
+                        <span style={costStyle(computed?.edge45TapingCostWon??0)}>{fmtWon(computed?.edge45TapingCostWon??0)}</span>
+                      </div>
+                    )}
+
+                    {/* 추가된 가공 항목 */}
+                    {addedProcs.map(key=>{
+                      const opt = PROC_OPTIONS.find(o=>o.key===key);
+                      if (!opt) return null;
+                      const costVal =
+                        key==='forming'  ? (computed?.formingCostWon??0)
+                        : key==='ruta'   ? (computed?.rutaCostWon??0)
+                        : key==='ruta2'  ? (computed?.ruta2CostWon??0)
+                        : key==='tenoner'? (computed?.tenonerCostWon??0)
+                        : 0;
+                      const mmVal =
+                        key==='forming'  ? Math.round(form.formingM*1000)
+                        : key==='ruta'   ? Math.round(form.rutaM*1000)
+                        : key==='ruta2'  ? Math.round(form.ruta2M*1000)
+                        : key==='tenoner'? (form.tenonerMm??0)
+                        : 0;
+                      const onChange = (v: number) => setForm(f=>{
+                        if(key==='forming')  return {...f,formingM:v/1000};
+                        if(key==='ruta')     return {...f,rutaM:v/1000};
+                        if(key==='ruta2')    return {...f,ruta2M:v/1000};
+                        if(key==='tenoner')  return {...f,tenonerMm:v};
+                        return f;
+                      });
+                      return (
+                        <div key={key} style={rowStyle}>
+                          <div style={labelStyle}>{opt.label}<IIcon tip={opt.tip} /></div>
+                          <div style={numBox}>
+                            <input type="number" value={mmVal||0} onChange={e=>onChange(Number(e.target.value)||0)}
+                              style={numInput} />
+                            <span style={{fontSize:'10px',color:'#888'}}>{opt.unit}</span>
+                          </div>
+                          <span style={costStyle(costVal)}>{fmtWon(costVal)}</span>
+                          {/* X 버튼 */}
+                          <button type="button" onClick={()=>setAddedProcs(p=>p.filter(k=>k!==key))}
+                            style={{border:'none',background:'none',cursor:'pointer',color:'#bbb',fontSize:'14px',lineHeight:1,padding:'0 2px',flexShrink:0}}>×</button>
+                        </div>
+                      );
+                    })}
+
+                    {/* + 가공 추가하기 드롭다운 */}
+                    <div style={{position:'relative',marginTop:'8px'}}>
+                      <button type="button" onClick={()=>setShowProcDropdown(p=>!p)}
+                        style={{height:'28px',width:'100%',fontSize:'11px',border:'0.5px dashed #d0d0d0',background:'transparent',cursor:'pointer',color:'#999'}}>
+                        + 가공 추가하기
+                      </button>
+                      {showProcDropdown && (
+                        <div ref={procDropdownRef} tabIndex={-1}
+                          style={{position:'absolute',top:'100%',left:0,right:0,background:'#fff',border:'0.5px solid #e0e0e0',boxShadow:'0 4px 12px rgba(0,0,0,0.08)',zIndex:20,marginTop:'2px',outline:'none'}}>
+                          {PROC_OPTIONS.filter(opt=>!addedProcs.includes(opt.key)).map(opt=>(
+                            <div key={opt.key}
+                              onClick={()=>{setAddedProcs(p=>[...p,opt.key]);setShowProcDropdown(false);}}
+                              style={{padding:'9px 12px',fontSize:'12px',color:'#1a1a1a',cursor:'pointer',display:'flex',justifyContent:'space-between',alignItems:'center'}}
+                              onMouseEnter={e=>{(e.currentTarget as HTMLElement).style.background='#f8f8f8';}}
+                              onMouseLeave={e=>{(e.currentTarget as HTMLElement).style.background='';}}
+                            >
+                              <span>{opt.label}</span>
+                              <span style={{fontSize:'10px',color:'#aaa'}}>{opt.tip}</span>
+                            </div>
+                          ))}
+                          {PROC_OPTIONS.every(opt=>addedProcs.includes(opt.key)) && (
+                            <div style={{padding:'9px 12px',fontSize:'12px',color:'#bbb'}}>추가 가능한 항목 없음</div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </>
                 );
               })()}
+              </section>
 
-              <div className="rdiv" />
-              <div className="rsum">
-                <span className="rl">합계</span>
-                <span className="rr">{computed?fmtWon(form.hMm>0?computed.grandTotalWon:computed.processingTotalWon):'—'}</span>
+              </div>{/* /maxWidth wrapper */}
+            </div>
+          </div>
+
+          {/* ── Right column: receipt (토스 영수증 스타일 + 데스커 컬러) ── */}
+          <div
+            className="editor-right"
+            style={{ fontFamily: "Pretendard, system-ui", fontFeatureSettings: "'tnum' 1", letterSpacing: "-0.01em" }}
+          >
+            {/* 자재명 */}
+            <div style={{fontSize:'13px',color:'#7E7E7E',marginBottom:'4px'}}>{form.name||'이름 없음'}</div>
+            {/* 합계 큰 숫자 */}
+            <div style={{fontSize:'26px',fontWeight:700,letterSpacing:'-0.02em',color:'#282828',marginBottom:'18px'}}>
+              {computed ? fmtWon(form.hMm>0 ? computed.grandTotalWon : computed.processingTotalWon) : '—'}
+            </div>
+
+            {/* ── 원재료비 ── */}
+            {(()=>{
+              const matCost  = computed?.materialCostWon ?? 0;
+              const edgeCost = computed?.edgeCostWon ?? 0;
+              const hmCost   = computed?.hotmeltCostWon ?? 0;
+              const isAbs    = form.edgePreset==='abs1t'||form.edgePreset==='abs2t'||form.edgePreset==='custom';
+              const matTotal = matCost + edgeCost + hmCost;
+              const rcRow = (label: string, sub: string|null, cost: number) => (
+                <div style={{display:'flex',justifyContent:'space-between',padding:'2px 0',fontSize:'11px',color:'#1a1a1a'}}>
+                  <div>
+                    <div>{label}</div>
+                    {sub && <div style={{fontSize:'10px',color:'#969696',marginTop:'1px'}}>{sub}</div>}
+                  </div>
+                  <div style={{fontWeight:500,color:cost?'#1a1a1a':'#B0B0B0',flexShrink:0,marginLeft:'8px'}}>{fmtWon(cost)}</div>
+                </div>
+              );
+              return (
+                <>
+                  <div style={{fontSize:'10px',fontWeight:600,color:'#888',letterSpacing:'0.06em',textTransform:'uppercase',marginBottom:'5px'}}>원재료비</div>
+                  {rcRow('목재 원재료비', `${form.wMm}×${form.dMm}×${form.hMm}T · ${form.boardMaterial}`, matCost)}
+                  {(form.edgePreset==='abs1t'||form.edgePreset==='abs2t') && rcRow(
+                    '엣지 원재료비',
+                    `ABS ${form.edgePreset==='abs2t'?'2T':'1T'} WW · ${(computed?.edgeLengthM??0).toFixed(2)}m`,
+                    edgeCost,
+                  )}
+                  {form.edgePreset==='custom' && rcRow(
+                    '엣지 원재료비',
+                    `ABS 사용자설정 WW · ${(computed?.edgeLengthM??0).toFixed(2)}m`,
+                    edgeCost,
+                  )}
+                  {form.edgePreset==='paint' && rcRow('엣지 원재료비', `도장엣지 WW · ${(computed?.edgeLengthM??0).toFixed(2)}m`, edgeCost)}
+                  {isAbs && rcRow('핫멜트', `${(computed?.edgeLengthM??0).toFixed(2)}m × ${form.hMm}T`, hmCost)}
+                  <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0 0',marginTop:'6px',borderTop:'1px solid #F0F0F0',fontSize:'13px',fontWeight:700,color:'#282828'}}>
+                    <span>원재료비 합계</span><span>{fmtWon(matTotal)}</span>
+                  </div>
+                </>
+              );
+            })()}
+
+            <div style={{height:'0.5px',background:'#EBEBEB',margin:'7px 0'}} />
+
+            {/* ── 가공비 ── */}
+            {(()=>{
+              const rcRow = (label: string, sub: string|null, cost: number) => cost > 0 ? (
+                <div style={{display:'flex',justifyContent:'space-between',padding:'2px 0',fontSize:'11px',color:'#1a1a1a'}}>
+                  <div>
+                    <div>{label}</div>
+                    {sub && <div style={{fontSize:'10px',color:'#969696',marginTop:'1px'}}>{sub}</div>}
+                  </div>
+                  <div style={{fontWeight:500,flexShrink:0,marginLeft:'8px'}}>{fmtWon(cost)}</div>
+                </div>
+              ) : null;
+
+              const cutCost   = computed?.cuttingCostWon ?? 0;
+              const bor1Cost  = computed?.boring1CostWon ?? 0;
+              const bor2Cost  = computed?.boring2CostWon ?? 0;
+              const asmCost   = computed?.assemblyCostWon ?? 0;
+              const frmCost   = computed?.formingCostWon ?? 0;
+              const rutaCost  = computed?.rutaCostWon ?? 0;
+              const ruta2Cost = computed?.ruta2CostWon ?? 0;
+              const tenCost   = computed?.tenonerCostWon ?? 0;
+              const tapCost   = computed?.edge45TapingCostWon ?? 0;
+              const paintCost = computed?.edge45PaintCostWon ?? 0;
+              const curvCost  = computed?.curvedCostWon ?? 0;
+
+              return (
+                <>
+                  <div style={{fontSize:'10px',fontWeight:600,color:'#888',letterSpacing:'0.06em',textTransform:'uppercase',marginBottom:'5px'}}>가공비</div>
+                  {cutCost > 0 && rcRow('재단', `${computed?.cuttingPlacementCount??0}개`, cutCost)}
+                  {bor1Cost > 0 && rcRow('일반 보링', `${form.boring1Ea}개 × 100원`, bor1Cost)}
+                  {bor2Cost > 0 && rcRow('2차 보링', `${form.boring2Ea}개 × 50원`, bor2Cost)}
+                  {asmCost  > 0 && rcRow('철물 조립', `${form.assemblyHours}개 × 35원`, asmCost)}
+                  {addedProcs.includes('forming')  && rcRow('포밍', `${Math.round(form.formingM*1000)}mm`, frmCost)}
+                  {addedProcs.includes('ruta')     && rcRow('일반 루타', `${Math.round(form.rutaM*1000)}mm`, rutaCost)}
+                  {addedProcs.includes('ruta2')    && rcRow('2차 루타', `${Math.round(form.ruta2M*1000)}mm`, ruta2Cost)}
+                  {addedProcs.includes('tenoner')  && rcRow('테노너', `${form.tenonerMm??0}mm`, tenCost)}
+                  {form.edgePreset==='edge45'      && rcRow('테이핑', '45도 엣지', tapCost)}
+                  {form.edgePreset==='paint'       && rcRow('도장 엣지', form.edge45PaintType||'—', paintCost)}
+                  {form.edgePreset==='curved'      && rcRow('곱면 엣지', `머시닝 ${Math.round(form.curvedEdgeM*1000)}mm · 수동 ${form.curvedManualMm??0}mm`, curvCost)}
+                  <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0 0',marginTop:'6px',borderTop:'1px solid #F0F0F0',fontSize:'13px',fontWeight:700,color:'#282828'}}>
+                    <span>가공비 합계</span><span>{fmtWon(computed?.processingTotalWon??0)}</span>
+                  </div>
+                </>
+              );
+            })()}
+
+            {/* 최종 합계 — 데스커 블랙 2px 라인으로 강조 */}
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',padding:'14px 0 0',marginTop:'10px',borderTop:'2px solid #282828'}}>
+              <div style={{fontSize:'14px',fontWeight:600,color:'#282828'}}>합계</div>
+              <div style={{fontSize:'18px',fontWeight:700,letterSpacing:'-0.02em',color:'#282828'}}>
+                {computed ? fmtWon(form.hMm>0 ? computed.grandTotalWon : computed.processingTotalWon) : '—'}
               </div>
             </div>
           </div>
+
         </div>
       </div>
+
+      {/* ── 원장 배치 선택 팝업 ── */}
+      {showBoardPopup && (()=>{
+        const EPS = 0.01;
+        const COL = '80px repeat(3,1fr)';
+        const GAP = '6px';
+        const PAD = '0 16px';
+
+        /** 커스텀 가격/코드 저장 헬퍼 */
+        const saveCustomCode = (sheetId: string, code: string) => {
+          const next = { ...popupCustomCodes, [sheetId]: code };
+          setPopupCustomCodes(next);
+          try { localStorage.setItem(`groot-sheet-codes-${editingIdRef.current ?? '_new'}`, JSON.stringify(next)); } catch {}
+        };
+        const clearCustomCode = (sheetId: string) => {
+          const next = { ...popupCustomCodes };
+          delete next[sheetId];
+          setPopupCustomCodes(next);
+          try { localStorage.setItem(`groot-sheet-codes-${editingIdRef.current ?? '_new'}`, JSON.stringify(next)); } catch {}
+        };
+
+        return (
+          <>
+            <div style={{position:'fixed',inset:0,zIndex:998,background:'rgba(0,0,0,0.45)'}} onClick={()=>setShowBoardPopup(false)} aria-hidden />
+            <div style={{
+              position:'fixed',top:'50%',left:'50%',transform:'translate(-50%,-50%)',
+              zIndex:999,background:'#fff',width:'95%',maxWidth:'860px',
+              maxHeight:'86vh',display:'flex',flexDirection:'column',
+              border:'0.5px solid #e0e0e0',boxShadow:'0 8px 32px rgba(0,0,0,0.18)',
+            }}>
+              {/* 타이틀 */}
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'13px 16px',borderBottom:'0.5px solid #e0e0e0',flexShrink:0}}>
+                <div style={{display:'flex',flexDirection:'column',gap:'2px'}}>
+                  <span style={{fontSize:'13px',fontWeight:600,color:'#1a1a1a'}}>원장 배치 선택</span>
+                  {(form.wMm > 0 || form.dMm > 0) && (
+                    <span style={{fontSize:'11px',color:'#888'}}>
+                      {form.name?.trim() || '이름 없음'} · {form.wMm}×{form.dMm}×{form.hMm}T
+                    </span>
+                  )}
+                </div>
+                <button type="button" onClick={()=>setShowBoardPopup(false)} style={{fontSize:'20px',cursor:'pointer',background:'none',border:'none',color:'#aaa',lineHeight:1,padding:'0 2px'}}>×</button>
+              </div>
+
+              {/* ── 열 헤더 (고정) ── */}
+              <div style={{
+                display:'grid',gridTemplateColumns:COL,columnGap:GAP,
+                padding:PAD,paddingTop:'10px',paddingBottom:'10px',
+                borderBottom:'0.5px solid #e0e0e0',flexShrink:0,background:'#fff',
+              }}>
+                {/* 빈 라벨 셀 */}
+                <div />
+                {/* 원장별 헤더 셀 */}
+                {SHEET_SPECS.map((s, si) => {
+                  const erpEntry = SHEET_ERP[s.id]?.[form.hMm];
+                  const currentPrice = form.sheetPrices[s.id] ?? erpEntry?.price ?? 0;
+                  const currentCode  = popupCustomCodes[s.id] ?? erpEntry?.code ?? '—';
+                  const priceCustom  = erpEntry !== undefined && form.sheetPrices[s.id] !== undefined && form.sheetPrices[s.id] !== erpEntry.price;
+                  const codeCustom   = popupCustomCodes[s.id] !== undefined && popupCustomCodes[s.id] !== (erpEntry?.code ?? '');
+                  const isCustom     = priceCustom || codeCustom;
+                  const isEditing    = popupEditSI === si;
+
+                  return (
+                    <div key={s.id} style={{
+                      position:'relative',padding:'8px 10px 8px 10px',
+                      background: isCustom ? '#FFF8F7' : '#f8f8f8',
+                      border: isCustom ? '0.5px solid #FFCCC8' : '0.5px solid #e0e0e0',
+                      textAlign:'center',
+                    }}>
+                      {/* 원장 크기 */}
+                      <div style={{fontSize:'13px',fontWeight:500,color:'#1a1a1a',marginBottom:'4px'}}>{s.label}</div>
+
+                      {/* 표시 모드 */}
+                      {!isEditing && (
+                        <>
+                          <div style={{fontSize:'11px',color: isCustom?'#FF5948':'#969696',fontWeight: isCustom?500:400}}>
+                            {currentPrice.toLocaleString()}원
+                          </div>
+                          <div style={{fontSize:'10px',color:'#969696',fontFamily:'monospace',marginTop:'2px',letterSpacing:'0.03em'}}>
+                            {currentCode}
+                          </div>
+                          {isCustom && (
+                            <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:'3px',marginTop:'4px'}}>
+                              <span style={{width:'5px',height:'5px',borderRadius:'50%',background:'#FF5948',flexShrink:0}} />
+                              <span style={{fontSize:'9px',color:'#FF5948',fontWeight:500}}>수정됨</span>
+                            </div>
+                          )}
+                          {isCustom && (
+                            <button type="button" onClick={()=>{
+                              if (erpEntry !== undefined) {
+                                setForm(f=>({...f,sheetPrices:{...f.sheetPrices,[s.id]:erpEntry.price}}));
+                              } else {
+                                setForm(f=>{ const p={...f.sheetPrices}; delete p[s.id]; return {...f,sheetPrices:p}; });
+                              }
+                              clearCustomCode(s.id);
+                            }} style={{fontSize:'10px',color:'#FF5948',background:'none',border:'none',cursor:'pointer',marginTop:'3px',padding:'0',display:'block',width:'100%'}}>
+                              기본값으로
+                            </button>
+                          )}
+                        </>
+                      )}
+
+                      {/* 편집 모드 */}
+                      {isEditing && (
+                        <div style={{display:'flex',flexDirection:'column',gap:'4px',marginTop:'2px'}}>
+                          <input type="number" value={popupEditPrice}
+                            onChange={e=>setPopupEditPrice(e.target.value)}
+                            placeholder="단가"
+                            style={{height:'24px',fontSize:'11px',border:'0.5px solid #ccc',padding:'0 6px',width:'100%',boxSizing:'border-box',outline:'none',textAlign:'right'}}
+                            onFocus={e=>{e.currentTarget.style.borderColor='var(--color-border-primary,#1a1a1a)';}}
+                            onBlur={e=>{e.currentTarget.style.borderColor='#ccc';}}
+                          />
+                          <input type="text" value={popupEditCode}
+                            onChange={e=>setPopupEditCode(e.target.value)}
+                            placeholder="자재코드"
+                            style={{height:'24px',fontSize:'10px',fontFamily:'monospace',border:'0.5px solid #ccc',padding:'0 6px',width:'100%',boxSizing:'border-box',outline:'none'}}
+                            onFocus={e=>{e.currentTarget.style.borderColor='var(--color-border-primary,#1a1a1a)';}}
+                            onBlur={e=>{e.currentTarget.style.borderColor='#ccc';}}
+                          />
+                          <div style={{display:'flex',gap:'4px',justifyContent:'center'}}>
+                            <button type="button" onClick={()=>setPopupEditSI(null)}
+                              style={{height:'22px',padding:'0 8px',fontSize:'10px',cursor:'pointer',border:'0.5px solid #e0e0e0',background:'transparent',color:'#555'}}>취소</button>
+                            <button type="button" onClick={()=>{
+                              const newPrice = parseInt(popupEditPrice) || 0;
+                              setForm(f=>({...f,sheetPrices:{...f.sheetPrices,[s.id]:newPrice}}));
+                              saveCustomCode(s.id, popupEditCode.trim());
+                              setPopupEditSI(null);
+                            }} style={{height:'22px',padding:'0 8px',fontSize:'10px',cursor:'pointer',border:'none',background:'#1A1A1A',color:'#fff',fontWeight:500}}>저장</button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 연필 아이콘 (상시) */}
+                      <button type="button" title="직접 입력"
+                        onClick={()=>{
+                          if (isEditing) { setPopupEditSI(null); }
+                          else { setPopupEditSI(si); setPopupEditPrice(String(currentPrice)); setPopupEditCode(currentCode==='—'?'':currentCode); }
+                        }}
+                        style={{
+                          position:'absolute',top:'8px',right:'8px',
+                          width:'20px',height:'20px',borderRadius:'50%',
+                          border:'none',cursor:'pointer',
+                          display:'flex',alignItems:'center',justifyContent:'center',
+                          fontSize:'12px',lineHeight:1,
+                          background: isEditing ? 'var(--color-border-tertiary,#e8e8e8)' : 'transparent',
+                          color: isEditing ? 'var(--color-text-primary,#1a1a1a)' : 'var(--color-text-tertiary,#aaa)',
+                          transition:'background 0.1s',
+                        }}
+                        onMouseEnter={e=>{if(!isEditing)(e.currentTarget as HTMLElement).style.background='var(--color-border-tertiary,#e8e8e8)';}}
+                        onMouseLeave={e=>{if(!isEditing)(e.currentTarget as HTMLElement).style.background='transparent';}}
+                      >✎</button>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* ── 스크롤 바디 ── */}
+              <div style={{overflowY:'auto',flex:1,padding:'10px 16px 14px'}}>
+                <div style={{display:'grid',gridTemplateColumns:COL,columnGap:GAP,rowGap:'8px'}}>
+                  {popupAllData.flatMap((rowCells, ri) => {
+                    const rowLabel = ri===0?'정방향':ri===1?'90°\n회전':'혼합\n배치';
+                    const cells = rowCells.map(cell => {
+                      const isMaxYield = cell.count>0 && cell.yieldPct>=popupMaxYield-EPS;
+                      const isMinPrice = cell.count>0 && cell.unitPrice<=popupMinPrice+EPS;
+                      const isHighlighted = isMaxYield || isMinPrice;
+                      const opacity = cell.count===0 ? 0.15 : isHighlighted ? 1 : 0.38;
+                      const isSel = ri===popupSelRI && cell.si===popupSelSI;
+                      return (
+                        <div key={`${ri}-${cell.si}`}
+                          onClick={()=>{if(cell.count>0){setPopupSelRI(ri);setPopupSelSI(cell.si);}}}
+                          style={{
+                            display:'flex',alignItems:'flex-start',gap:'8px',
+                            padding:'8px 9px',position:'relative',
+                            border:'1px solid #e8e8e8',
+                            borderTop: isSel ? '2px solid #1A1A1A' : '1px solid #e8e8e8',
+                            background:'#fff',
+                            cursor: cell.count>0?'pointer':'default',
+                            opacity,
+                          }}>
+                          {/* SVG */}
+                          <div style={{flexShrink:0}}>
+                            <SheetSVG sheetW={cell.sheetW} sheetH={cell.sheetH} wMm={form.wMm} dMm={form.dMm} mode={cell.mode} />
+                          </div>
+                          {/* 정보 */}
+                          <div style={{flex:1,minWidth:0,paddingTop:'2px'}}>
+                            <div style={{display:'flex',gap:'3px',marginBottom:'4px',minHeight:'14px',flexWrap:'wrap'}}>
+                              {isMaxYield && <span style={{fontSize:'9px',padding:'1px 5px',fontWeight:600,background:'#FF5948',color:'#fff'}}>추천</span>}
+                              {isMinPrice && <span style={{fontSize:'9px',padding:'1px 5px',fontWeight:600,background:'#3DB97A',color:'#fff'}}>최저가</span>}
+                            </div>
+                            <div style={{fontSize:'11px',fontWeight:600,color:'#1a1a1a',marginBottom:'2px'}}>{cell.sheetLabel}</div>
+                            <div style={{fontSize:'12px',fontWeight:700,color:'#1a1a1a',marginBottom:'1px'}}>
+                              {cell.count>0?`${cell.count} EA`:'배치 불가'}
+                            </div>
+                            <div style={{fontSize:'11px',color: isMaxYield?'#FF5948':'#888',fontWeight: isMaxYield?600:400,marginBottom:'2px'}}>
+                              {cell.count>0?`수율 ${cell.yieldPct.toFixed(1)}%`:''}
+                            </div>
+                            {cell.count>0 && (
+                              <div style={{fontSize:'11px',color:'#555'}}>
+                                장당 {cell.unitPrice.toLocaleString()}원
+                              </div>
+                            )}
+                          </div>
+                          {/* 선택 체크 원 (흰 배경, 검은 체크) */}
+                          {isSel && (
+                            <div style={{position:'absolute',top:'6px',right:'6px',width:'16px',height:'16px',borderRadius:'50%',background:'#fff',border:'1.5px solid #1A1A1A',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+                              <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                                <polyline points="1,4 3,6.5 7,1.5" stroke="#1A1A1A" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                              </svg>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    });
+                    return [
+                      <div key={`lbl-${ri}`} style={{display:'flex',alignItems:'center',justifyContent:'center',textAlign:'center',fontSize:'10px',fontWeight:500,color:'#969696',whiteSpace:'pre-line',padding:'4px 2px'}}>
+                        {rowLabel}
+                      </div>,
+                      ...cells,
+                    ];
+                  })}
+                </div>
+              </div>
+
+              {/* 푸터 */}
+              <div style={{padding:'10px 14px',borderTop:'0.5px solid #e0e0e0',display:'flex',justifyContent:'flex-end',gap:'6px',flexShrink:0}}>
+                <button type="button" onClick={()=>setShowBoardPopup(false)} style={{height:'32px',padding:'0 14px',fontSize:'12px',cursor:'pointer',border:'0.5px solid #e0e0e0',background:'transparent',color:'#555'}}>취소</button>
+                <button type="button" onClick={saveBoardSel} style={{height:'32px',padding:'0 14px',fontSize:'12px',cursor:'pointer',border:'none',background:'#1A1A1A',color:'#fff',fontWeight:500}}>선택 저장</button>
+              </div>
+            </div>
+          </>
+        );
+      })()}
 
       {listOpen && (
         <>

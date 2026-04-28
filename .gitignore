@@ -9,3 +9,6 @@ server/data/uploads/
 
 # 로컬 견적/엑셀 원본 (저장소 미포함)
 excel/
+
+# Worktree 스냅샷 (개발 중 이전 단계 상태 보관용 — 저장소 미포함)
+.backup-*/

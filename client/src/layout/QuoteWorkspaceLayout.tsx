@@ -1,4 +1,5 @@
 import { Outlet, useLocation } from "react-router-dom";
+import { useQuoteTabs } from "../context/QuoteTabsContext";
 
 export type QuoteOutletContext = {
   setMaterialBanner: (m: string | null) => void;
@@ -13,7 +14,9 @@ function getBreadcrumb(pathname: string): string {
 
 export function QuoteWorkspaceLayout() {
   const loc = useLocation();
+  const { activeTabId, tabLabels } = useQuoteTabs();
   const breadcrumb = getBreadcrumb(loc.pathname);
+  const entityName = (activeTabId && tabLabels[activeTabId]?.name) || "이름 없음";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, overflow: "hidden" }}>
@@ -21,7 +24,7 @@ export function QuoteWorkspaceLayout() {
       <div className="sub-header">
         <span className="sub-breadcrumb">{breadcrumb}</span>
         <span className="sub-sep">/</span>
-        <span className="sub-title">이름 없음</span>
+        <span className="sub-title">{entityName}</span>
       </div>
 
       {/* Page content */}
