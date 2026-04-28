@@ -16,6 +16,7 @@ import {
   effectiveYieldPlacementMode,
 } from "../lib/materialCalc";
 import type { SheetId } from "../lib/yield";
+import { UploadFlow } from "../material/quote/UploadFlow";
 
 const QUOTE_PATHS = ["/material", "/product", "/set", "/compare"];
 
@@ -25,6 +26,12 @@ function QuoteShell() {
   const [dbOpen, setDbOpen] = useState(false);
   const { lastSavedAt, treeNodes } = useTree();
   const [showSaved, setShowSaved] = useState(false);
+
+  /** 헤더 "도면/모델링 업로드" — 어디서든 같은 동작.
+   *  업로드/검토 모달은 UploadFlow (이 컴포넌트 하단에 마운트) 가 전역 이벤트 수신해서 띄움 */
+  const handleOpenUpload = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("groot:open-upload"));
+  }, []);
 
   useEffect(() => {
     if (!lastSavedAt) return;
@@ -145,7 +152,7 @@ function QuoteShell() {
           <button
             type="button"
             className="g-btn"
-            onClick={() => window.dispatchEvent(new CustomEvent("groot:open-upload"))}
+            onClick={handleOpenUpload}
           >
             도면/모델링 업로드
           </button>
@@ -167,6 +174,9 @@ function QuoteShell() {
       </div>
 
       {dbOpen && <DBModal onClose={() => setDbOpen(false)} />}
+
+      {/* 업로드/검토 모달 — 라우트 무관, 한 번만 마운트 */}
+      <UploadFlow />
     </div>
   );
 }

@@ -42,37 +42,55 @@ import { formatWonKorean } from "../util/format";
 export type PlacementMode = "default" | "rotated" | "mixed";
 
 /** 두께(T) × 원장 사이즈별 장당 단가 (원) — ERP DB 기준 (WW LPM/O PB) */
+const _SP_15  = { "4x6": 23270, "4x8": 32800, "6x8": 23270 } as const;
+const _SP_18  = { "4x6": 16620, "4x8": 23270, "6x8": 23770 } as const;
+const _SP_22  = { "4x8": 19460, "6x8": 23270 } as const;
+const _SP_25  = { "4x8": 23270 } as const;
+const _SP_28  = { "4x8": 23270, "6x8": 23270 } as const;
 const SHEET_PRICE_BY_THICKNESS: Partial<Record<number, Partial<Record<string, number>>>> = {
   12: { "4x8": 19460 },
-  15: { "4x6": 23270, "4x8": 32800, "6x8": 23270 },
-  18: { "4x6": 16620, "4x8": 23270, "6x8": 23770 },
-  22: { "4x8": 19460, "6x8": 23270 },
-  25: { "4x8": 23270 },
-  28: { "4x8": 23270, "6x8": 23270 },
+  15: _SP_15,   15.5: _SP_15,   // parser.py STANDARD_THICKNESSES .5 alias
+  18: _SP_18,   18.5: _SP_18,
+  22: _SP_22,   22.5: _SP_22,
+  25: _SP_25,
+  28: _SP_28,   28.5: _SP_28,
 };
 
 
 const ALL_SHEET_IDS = ["4x6", "4x8", "6x8"] as const;
 
-/** ERP 자재코드 + 장당 단가 매핑 (WW LPM/O PB, T값 기준) */
+/** ERP 자재코드 + 장당 단가 매핑 (WW LPM/O PB, T값 기준)
+ *  parser.py STANDARD_THICKNESSES (.5 단위) 호환 위해 정수+소수 alias 둘 다 등록 */
+const _ERP_4x6_15 = { price: 23270, code: 'WDWP001205-R000' };
+const _ERP_4x6_18 = { price: 16620, code: 'WDPGBL0000550'  };
+const _ERP_4x8_12 = { price: 19460, code: 'WDWP000260-R000' };
+const _ERP_4x8_15 = { price: 32800, code: 'WDWP000258-R000' };
+const _ERP_4x8_18 = { price: 23270, code: 'WDWP000274-R000' };
+const _ERP_4x8_22 = { price: 19460, code: 'WDWP000266-R000' };
+const _ERP_4x8_25 = { price: 23270, code: 'WDWP001811-R000' };
+const _ERP_4x8_28 = { price: 23270, code: 'WDWP000407-R000' };
+const _ERP_6x8_15 = { price: 23270, code: 'WDWP001360-R000' };
+const _ERP_6x8_18 = { price: 23770, code: 'WDWPMF0000237'  };
+const _ERP_6x8_22 = { price: 23270, code: 'WDWP000730-R000' };
+const _ERP_6x8_28 = { price: 23270, code: 'WDWP000951-R000' };
 const SHEET_ERP: Record<string, Partial<Record<number, { price: number; code: string }>>> = {
   '4x6': {
-    15: { price: 23270, code: 'WDWP001205-R000' },
-    18: { price: 16620, code: 'WDPGBL0000550'  },
+    15: _ERP_4x6_15, 15.5: _ERP_4x6_15,
+    18: _ERP_4x6_18, 18.5: _ERP_4x6_18,
   },
   '4x8': {
-    12: { price: 19460, code: 'WDWP000260-R000' },
-    15: { price: 32800, code: 'WDWP000258-R000' },
-    18: { price: 23270, code: 'WDWP000274-R000' },
-    22: { price: 19460, code: 'WDWP000266-R000' },
-    25: { price: 23270, code: 'WDWP001811-R000' },
-    28: { price: 23270, code: 'WDWP000407-R000' },
+    12: _ERP_4x8_12,
+    15: _ERP_4x8_15, 15.5: _ERP_4x8_15,
+    18: _ERP_4x8_18, 18.5: _ERP_4x8_18,
+    22: _ERP_4x8_22, 22.5: _ERP_4x8_22,
+    25: _ERP_4x8_25,
+    28: _ERP_4x8_28, 28.5: _ERP_4x8_28,
   },
   '6x8': {
-    15: { price: 23270, code: 'WDWP001360-R000' },
-    18: { price: 23770, code: 'WDWPMF0000237'  },
-    22: { price: 23270, code: 'WDWP000730-R000' },
-    28: { price: 23270, code: 'WDWP000951-R000' },
+    15: _ERP_6x8_15, 15.5: _ERP_6x8_15,
+    18: _ERP_6x8_18, 18.5: _ERP_6x8_18,
+    22: _ERP_6x8_22, 22.5: _ERP_6x8_22,
+    28: _ERP_6x8_28, 28.5: _ERP_6x8_28,
   },
 };
 
@@ -637,6 +655,20 @@ export const MaterialTab = forwardRef<
       if ((nextForm.ruta2M ?? 0) > 0) restoredProcs.push("ruta2");
       if ((nextForm.tenonerMm ?? 0) > 0) restoredProcs.push("tenoner");
 
+      // 두께 정수화 — 15.5/18.5/22.5/28.5 같은 STP 실측값을 사용자 표시 통일 (15T/18T/22T/28T)
+      if (nextForm.hMm > 0 && !Number.isInteger(nextForm.hMm)) {
+        nextForm.hMm = Math.floor(nextForm.hMm);
+      }
+
+      // sheetPrices 자동 보완 — 빈 객체였던 기존 자재 복구
+      const _hasPrices = nextForm.sheetPrices && Object.keys(nextForm.sheetPrices).length > 0;
+      if (!_hasPrices && nextForm.hMm > 0) {
+        const _p = SHEET_PRICE_BY_THICKNESS[nextForm.hMm] ?? {};
+        const _sp: Record<string, number> = {};
+        for (const sid of ALL_SHEET_IDS) if (_p[sid] != null) _sp[sid] = _p[sid]!;
+        nextForm.sheetPrices = _sp;
+      }
+
       // Merge from groot_bom node data if available (immediate-saved, may be fresher than StoredMaterial)
       // activeMatNodeId is not available here so use tree activeItem via ref
       let finalProcs = restoredProcs;
@@ -645,7 +677,8 @@ export const MaterialTab = forwardRef<
         const origHMm = nextForm.hMm;
         nextForm.wMm = bomData.w;
         nextForm.dMm = bomData.d;
-        nextForm.hMm = bomData.t;
+        // bomData.t 가 18.5 등 .5 단위면 정수로 통일 (사용자 표시 일관성)
+        nextForm.hMm = Number.isInteger(bomData.t) ? bomData.t : Math.floor(bomData.t);
         nextForm.boardMaterial = bomData.material;
         nextForm.surfaceMaterial = bomData.surface;
         nextForm.color = bomData.color;
@@ -662,6 +695,25 @@ export const MaterialTab = forwardRef<
         if (Array.isArray(bomData.processes) && bomData.processes.length > 0) {
           const validKeys = ["forming","ruta","ruta2","tenoner"];
           finalProcs = bomData.processes.filter((k: string) => validKeys.includes(k));
+        }
+      }
+
+      // edgeCustomSides 자동 복구 — bomData 가 모두 0 인 손상 상태도 보정
+      // (edgeSides 가 일부만 true 인 1면/2면/3면 경우, 그 면에 edgeT 두께값 부여)
+      {
+        const _ecs = nextForm.edgeCustomSides;
+        const _allZero = _ecs && [_ecs.top, _ecs.bottom, _ecs.left, _ecs.right].every((v) => !v);
+        const _es = nextForm.edgeSides;
+        const _someActive = _es && [_es.top, _es.bottom, _es.left, _es.right].some(Boolean);
+        const _notAll = _es && ![_es.top, _es.bottom, _es.left, _es.right].every(Boolean);
+        if (_allZero && _someActive && _notAll) {
+          const _t = nextForm.edgePreset === "abs2t" ? 2 : 1;
+          nextForm.edgeCustomSides = {
+            top:    _es.top    ? _t : 0,
+            bottom: _es.bottom ? _t : 0,
+            left:   _es.left   ? _t : 0,
+            right:  _es.right  ? _t : 0,
+          };
         }
       }
 
@@ -739,8 +791,12 @@ export const MaterialTab = forwardRef<
   onSaveRef.current = onSave;
 
   // Immediate BOM save: on every form/addedProcs change, save to groot_bom mat node
+  // 주의: loadMaterial 이 완료되기 전(editingId !== activeMatNodeId)에 발화하면
+  // 빈 defaultForm 으로 BOM 데이터를 덮어쓰는 race condition 발생.
+  // editingId 가 activeMatNodeId 와 일치할 때만 (= 해당 자재의 form 이 로드된 상태) 저장.
   useEffect(() => {
     if (!activeMatNodeId) return;
+    if (editingId !== activeMatNodeId) return;
     const { edgeType, edgeSetting } = edgePresetToBom(form.edgePreset);
     const data: BomMaterialData = {
       w: form.wMm,
@@ -756,7 +812,7 @@ export const MaterialTab = forwardRef<
     };
     putBomNodeData(activeMatNodeId, data);
     updateNodeData(activeMatNodeId, data);
-  }, [activeMatNodeId, form, addedProcs]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeMatNodeId, editingId, form, addedProcs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const quoteMode = Boolean(quoteBindEntityId);
 
@@ -1032,77 +1088,86 @@ export const MaterialTab = forwardRef<
       <div style={{display:'flex',height:'100%',minHeight:0,width:'100%',overflow:'hidden'}}>
         <div className="editor-body">
 
-          {/* ── Left column: single scrollable flat layout ── */}
-          <div className="editor-left">
-            <div className="ed-content" style={{padding:'16px 18px',overflowY:'auto'}}>
-              <div style={{maxWidth:'600px'}}>
+          {/* ── Left column: 토스 영수증 스타일 섹션 카드 ── */}
+          <div className="editor-left" style={{ fontFamily: "Pretendard, system-ui", letterSpacing: "-0.01em" }}>
+            <div className="ed-content" style={{padding:'0',overflowY:'auto'}}>
+              <div style={{maxWidth:'640px'}}>
 
-              {/* 패널 */}
-              <div style={{fontSize:'10px',fontWeight:600,color:'#888',letterSpacing:'0.06em',textTransform:'uppercase',marginBottom:'8px'}}>패널</div>
+              {/* ── 섹션: 패널 ── */}
+              <section style={{padding:'20px 24px',borderBottom:'1px solid #F0F0F0'}}>
+                <div style={{fontSize:'11px',fontWeight:500,color:'#7E7E7E',letterSpacing:'0.05em',textTransform:'uppercase',marginBottom:'12px'}}>패널</div>
 
-              {/* W / D / H(T) */}
-              <div style={{display:'flex',gap:'8px',marginBottom:'10px'}}>
-                <div style={{flex:1,display:'flex',flexDirection:'column'}}>
-                  <div style={{fontSize:'11px',color:'#555',marginBottom:'3px'}}>W (mm)</div>
-                  <input className="fi" type="number" value={form.wMm||''} placeholder="0"
-                    onChange={e=>onDimensionCommit({wMm:Number(e.target.value)||0,dMm:form.dMm,hMm:form.hMm})} />
-                </div>
-                <div style={{flex:1,display:'flex',flexDirection:'column'}}>
-                  <div style={{fontSize:'11px',color:'#555',marginBottom:'3px'}}>D (mm)</div>
-                  <input className="fi" type="number" value={form.dMm||''} placeholder="0"
-                    onChange={e=>onDimensionCommit({wMm:form.wMm,dMm:Number(e.target.value)||0,hMm:form.hMm})} />
-                </div>
-                <div style={{flex:1,display:'flex',flexDirection:'column'}}>
-                  <div style={{fontSize:'11px',color:'#555',marginBottom:'3px'}}>H (T)</div>
-                  <input className="fi" type="number" value={form.hMm||''} placeholder="0"
-                    onChange={e=>onDimensionCommit({wMm:form.wMm,dMm:form.dMm,hMm:Number(e.target.value)||0})} />
-                </div>
-              </div>
-
-              {/* 소재 / 표면재 / 색상 — 고정값, 수정 불가 */}
-              {(()=>{
-                const fixedCell = (label: string, val: string) => (
-                  <div style={{flex:1,display:'flex',flexDirection:'column'}}>
-                    <div style={{fontSize:'11px',color:'#555',marginBottom:'3px'}}>{label}</div>
-                    <div style={{
-                      height:'30px',display:'flex',alignItems:'center',padding:'0 8px',
-                      background:'#f4f4f4',border:'0.5px solid #e0e0e0',
-                      fontSize:'12px',color:'#888',userSelect:'none',flexShrink:0,
-                    }}>{val}</div>
+                {/* W / D / H(T) */}
+                <div style={{display:'flex',gap:'12px',marginBottom:'12px'}}>
+                  <div style={{flex:1}}>
+                    <label style={{display:'block',fontSize:'12px',color:'#616161',marginBottom:'6px'}}>W (mm)</label>
+                    <input className="fi" type="number" value={form.wMm||''} placeholder="0"
+                      onChange={e=>onDimensionCommit({wMm:Number(e.target.value)||0,dMm:form.dMm,hMm:form.hMm})} />
                   </div>
-                );
-                return (
-                  <div style={{display:'flex',gap:'8px',marginBottom:'10px'}}>
-                    {fixedCell('소재', 'PB')}
-                    {fixedCell('표면재', 'LPM/O')}
-                    {fixedCell('색상', 'WW')}
+                  <div style={{flex:1}}>
+                    <label style={{display:'block',fontSize:'12px',color:'#616161',marginBottom:'6px'}}>D (mm)</label>
+                    <input className="fi" type="number" value={form.dMm||''} placeholder="0"
+                      onChange={e=>onDimensionCommit({wMm:form.wMm,dMm:Number(e.target.value)||0,hMm:form.hMm})} />
                   </div>
-                );
-              })()}
-
-              {/* 원장 추천 바 */}
-              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 10px',background:'#f8f8f8',border:'0.5px solid #e0e0e0',marginBottom:'12px'}}>
-                <div>
-                  <div style={{fontSize:'12px',fontWeight:500,color:'#1a1a1a'}}>
-                    {barData
-                      ? <>{barData.sheetLabel} 원장 · {barData.label} 배치 <span style={{color:'#FF5948',fontWeight:600}}>({barData.yieldPct.toFixed(1)}%)</span></>
-                      : '—'}
+                  <div style={{flex:1}}>
+                    <label style={{display:'block',fontSize:'12px',color:'#616161',marginBottom:'6px'}}>H (T)</label>
+                    <input className="fi" type="number" value={form.hMm||''} placeholder="0"
+                      onChange={e=>onDimensionCommit({wMm:form.wMm,dMm:form.dMm,hMm:Number(e.target.value)||0})} />
                   </div>
-                  <div style={{fontSize:'10px',color:'#888',marginTop:'1px'}}>목재 패널 자재비</div>
                 </div>
-                <div style={{display:'flex',alignItems:'center',gap:'8px',flexShrink:0}}>
-                  <span style={{fontSize:'13px',fontWeight:500,color:'#1a1a1a'}}>{barData ? fmtWon(barData.unitPrice) : '—'}</span>
-                  <button type="button" onClick={openBoardPopup}
-                    style={{fontSize:'11px',color:'#555',border:'0.5px solid #e0e0e0',padding:'3px 8px',background:'transparent',cursor:'pointer'}}>변경</button>
+
+                {/* 소재 / 표면재 / 색상 — 고정 (데스커 비활성 스타일) */}
+                {(()=>{
+                  const fixedCell = (label: string, val: string) => (
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:'12px',color:'#616161',marginBottom:'6px'}}>{label}</div>
+                      <div style={{
+                        height:'36px',display:'flex',alignItems:'center',padding:'0 12px',
+                        background:'#F0F0F0',border:'1px solid #F0F0F0',borderRadius:'4px',
+                        fontSize:'14px',color:'#616161',userSelect:'none',cursor:'not-allowed',
+                      }}>{val}</div>
+                    </div>
+                  );
+                  return (
+                    <div style={{display:'flex',gap:'12px',marginBottom:'14px'}}>
+                      {fixedCell('소재', 'PB')}
+                      {fixedCell('표면재', 'LPM/O')}
+                      {fixedCell('색상', 'WW')}
+                    </div>
+                  );
+                })()}
+
+                {/* 원장 선택 카드 (토스 스타일) */}
+                <div
+                  onClick={openBoardPopup}
+                  onMouseEnter={(e)=>{(e.currentTarget as HTMLDivElement).style.background='#E8E8E8'}}
+                  onMouseLeave={(e)=>{(e.currentTarget as HTMLDivElement).style.background='#F0F0F0'}}
+                  style={{
+                    display:'flex',alignItems:'center',justifyContent:'space-between',
+                    padding:'12px 16px',background:'#F0F0F0',border:'1px solid #F0F0F0',
+                    borderRadius:'4px',cursor:'pointer',transition:'background .15s',
+                  }}>
+                  <div>
+                    <div style={{fontSize:'13px',fontWeight:600,color:'#282828'}}>
+                      {barData
+                        ? <>{barData.sheetLabel} 원장 · {barData.label} 배치 <span style={{color:'#7E7E7E',fontWeight:500}}>({barData.yieldPct.toFixed(1)}%)</span></>
+                        : '원장 미선택'}
+                    </div>
+                    <div style={{fontSize:'11px',color:'#7E7E7E',marginTop:'2px'}}>목재 패널 자재비</div>
+                  </div>
+                  <div style={{display:'flex',alignItems:'center',gap:'10px',flexShrink:0}}>
+                    <span style={{fontSize:'14px',fontWeight:700,color:'#282828',fontFeatureSettings:"'tnum' 1"}}>
+                      {barData ? fmtWon(barData.unitPrice) : '—'}
+                    </span>
+                    <span style={{fontSize:'11px',color:'#7E7E7E'}}>변경 ›</span>
+                  </div>
                 </div>
-              </div>
+              </section>
 
-              {/* ── divider ── */}
-              <div style={{height:'0.5px',background:'#e0e0e0',margin:'12px 0'}} />
-
-              {/* ── 엣지 ── */}
-              <div style={{fontSize:'10px',fontWeight:600,color:'#888',letterSpacing:'0.06em',textTransform:'uppercase',marginBottom:'8px'}}>엣지</div>
-              <div style={{fontSize:'11px',color:'#555',marginBottom:'4px'}}>사양</div>
+              {/* ── 섹션: 엣지 ── */}
+              <section style={{padding:'20px 24px',borderBottom:'1px solid #F0F0F0'}}>
+                <div style={{fontSize:'11px',fontWeight:500,color:'#7E7E7E',letterSpacing:'0.05em',textTransform:'uppercase',marginBottom:'12px'}}>엣지</div>
+                <div style={{fontSize:'12px',color:'#616161',marginBottom:'6px'}}>사양</div>
 
               {/* 사양 토글: 없음 / ABS / 도장(비활성) / 45도(비활성) / 곡면(비활성) */}
               {(()=>{
@@ -1323,11 +1388,11 @@ export const MaterialTab = forwardRef<
                 </div>
               )}
 
-              {/* ── divider ── */}
-              <div style={{height:'0.5px',background:'#e0e0e0',margin:'12px 0'}} />
+              </section>
 
-              {/* ── 가공 ── */}
-              <div style={{fontSize:'10px',fontWeight:600,color:'#888',letterSpacing:'0.06em',textTransform:'uppercase',marginBottom:'8px'}}>가공</div>
+              {/* ── 섹션: 가공 ── */}
+              <section style={{padding:'20px 24px',borderBottom:'1px solid #F0F0F0'}}>
+                <div style={{fontSize:'11px',fontWeight:500,color:'#7E7E7E',letterSpacing:'0.05em',textTransform:'uppercase',marginBottom:'12px'}}>가공</div>
 
               {/* 공통 가공 행 컴포넌트 스타일 */}
               {(()=>{
@@ -1452,17 +1517,21 @@ export const MaterialTab = forwardRef<
                   </>
                 );
               })()}
+              </section>
 
               </div>{/* /maxWidth wrapper */}
             </div>
           </div>
 
-          {/* ── Right column: receipt ── */}
-          <div className="editor-right">
+          {/* ── Right column: receipt (토스 영수증 스타일 + 데스커 컬러) ── */}
+          <div
+            className="editor-right"
+            style={{ fontFamily: "Pretendard, system-ui", fontFeatureSettings: "'tnum' 1", letterSpacing: "-0.01em" }}
+          >
             {/* 자재명 */}
-            <div style={{fontSize:'12px',fontWeight:600,color:'#1a1a1a',marginBottom:'2px'}}>{form.name||'이름 없음'}</div>
+            <div style={{fontSize:'13px',color:'#7E7E7E',marginBottom:'4px'}}>{form.name||'이름 없음'}</div>
             {/* 합계 큰 숫자 */}
-            <div style={{fontSize:'20px',fontWeight:600,letterSpacing:'-0.02em',color:'#1a1a1a',marginBottom:'12px'}}>
+            <div style={{fontSize:'26px',fontWeight:700,letterSpacing:'-0.02em',color:'#282828',marginBottom:'18px'}}>
               {computed ? fmtWon(form.hMm>0 ? computed.grandTotalWon : computed.processingTotalWon) : '—'}
             </div>
 
@@ -1498,7 +1567,7 @@ export const MaterialTab = forwardRef<
                   )}
                   {form.edgePreset==='paint' && rcRow('엣지 원재료비', `도장엣지 WW · ${(computed?.edgeLengthM??0).toFixed(2)}m`, edgeCost)}
                   {isAbs && rcRow('핫멜트', `${(computed?.edgeLengthM??0).toFixed(2)}m × ${form.hMm}T`, hmCost)}
-                  <div style={{display:'flex',justifyContent:'space-between',padding:'2px 0',fontSize:'11px',fontWeight:600,color:'#FF5948'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0 0',marginTop:'6px',borderTop:'1px solid #F0F0F0',fontSize:'13px',fontWeight:700,color:'#282828'}}>
                     <span>원재료비 합계</span><span>{fmtWon(matTotal)}</span>
                   </div>
                 </>
@@ -1545,19 +1614,17 @@ export const MaterialTab = forwardRef<
                   {form.edgePreset==='edge45'      && rcRow('테이핑', '45도 엣지', tapCost)}
                   {form.edgePreset==='paint'       && rcRow('도장 엣지', form.edge45PaintType||'—', paintCost)}
                   {form.edgePreset==='curved'      && rcRow('곱면 엣지', `머시닝 ${Math.round(form.curvedEdgeM*1000)}mm · 수동 ${form.curvedManualMm??0}mm`, curvCost)}
-                  <div style={{display:'flex',justifyContent:'space-between',padding:'2px 0',fontSize:'11px',fontWeight:600,color:'#FF5948'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0 0',marginTop:'6px',borderTop:'1px solid #F0F0F0',fontSize:'13px',fontWeight:700,color:'#282828'}}>
                     <span>가공비 합계</span><span>{fmtWon(computed?.processingTotalWon??0)}</span>
                   </div>
                 </>
               );
             })()}
 
-            <div style={{height:'0.5px',background:'#EBEBEB',margin:'7px 0'}} />
-
-            {/* 최종 합계 */}
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline'}}>
-              <div style={{fontSize:'12px',fontWeight:700,color:'#1a1a1a'}}>합계</div>
-              <div style={{fontSize:'15px',fontWeight:700,letterSpacing:'-0.02em',color:'#1a1a1a'}}>
+            {/* 최종 합계 — 데스커 블랙 2px 라인으로 강조 */}
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',padding:'14px 0 0',marginTop:'10px',borderTop:'2px solid #282828'}}>
+              <div style={{fontSize:'14px',fontWeight:600,color:'#282828'}}>합계</div>
+              <div style={{fontSize:'18px',fontWeight:700,letterSpacing:'-0.02em',color:'#282828'}}>
                 {computed ? fmtWon(form.hMm>0 ? computed.grandTotalWon : computed.processingTotalWon) : '—'}
               </div>
             </div>

@@ -1,7 +1,53 @@
 import { useMemo, useRef, useState } from "react";
+import JSZip from "jszip";
 import type { ParsedReviewRow } from "./ReviewModal";
 
 const STP_API_URL = (import.meta.env.VITE_STP_API_URL as string | undefined) ?? "http://localhost:8000";
+
+/** ZIP 안에 .stp / .step 파일이 있으면 — 백엔드 파싱 실패 시 폴백으로
+ *  파일별 placeholder 행을 만들어 "수동 입력" 흐름을 유지한다.
+ *  (어셈블리 .asm, 하드웨어 키워드 등은 백엔드와 동일하게 제외) */
+const HARDWARE_KEYWORDS = [
+  "SCREW", "RASTEX", "RAFIX", "HETTICH", "SPRING", "WASHER",
+  "FLAT-SYSTEM", "DABO", "STICKER", "QC", "CAUTION", "STRUT",
+  "BRK", "GLIDE", "LEVELER", "HINGE", "SALICE", "BAPGX",
+  "MULTISOCKET", "TORX", "BRACKET", "RUBBERPAD",
+  "ELECTRODE", "PCB", "USB", "LED",
+];
+
+function isAsmName(name: string): boolean {
+  const u = name.toUpperCase();
+  return u.includes("ASSY") || u.includes("ASM");
+}
+function isHardwareName(name: string): boolean {
+  const u = name.toUpperCase();
+  if (/\b\d{1,2}X\d+\b|\dP\d+/.test(u)) return true;
+  return HARDWARE_KEYWORDS.some((kw) => u.includes(kw));
+}
+function isEdgeName(name: string): boolean {
+  const stem = name.replace(/\.(stp|step)$/i, "").toUpperCase();
+  return /[_-](E|EDGE)([_-]|$)/.test(stem);
+}
+
+async function extractStpEntriesFromZip(zipFile: File): Promise<string[]> {
+  try {
+    const zip = await JSZip.loadAsync(await zipFile.arrayBuffer());
+    const out: string[] = [];
+    zip.forEach((relPath, entry) => {
+      if (entry.dir) return;
+      const lower = relPath.toLowerCase();
+      if (!(lower.endsWith(".stp") || lower.endsWith(".step"))) return;
+      const base = relPath.split(/[/\\]/).pop() || relPath;
+      if (isAsmName(base)) return;
+      if (isHardwareName(base)) return;
+      if (isEdgeName(base)) return; // 엣지 파일은 보드 행에 흡수되는 게 정상이라 제외
+      out.push(base);
+    });
+    return out;
+  } catch {
+    return [];
+  }
+}
 
 type Props = {
   open: boolean;
@@ -36,7 +82,7 @@ function fileSizeMB(file: File): string {
   return `${(file.size / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function buildRows(materials: unknown[], fallbackSource: ParsedReviewRow["source"], fileName: string): ParsedReviewRow[] {
+function buildRows(materials: unknown[], fallbackSource: ParsedReviewRow["source"], fileName: string, uploadFile?: File): ParsedReviewRow[] {
   return materials.map((m, i) => {
     const r = m as Record<string, unknown>;
     const edgeCount = Number(r.edgeCount ?? r.edgeEa ?? 0);
@@ -55,14 +101,24 @@ function buildRows(materials: unknown[], fallbackSource: ParsedReviewRow["source
       source,
       W: Number(r.wMm ?? r.w ?? 0),
       D: Number(r.dMm ?? r.d ?? 0),
-      T: Number(r.hMm ?? r.t ?? r.thicknessMm ?? 0),
-      edge: edgeCount >= 4 ? "4면" : edgeCount >= 2 ? "2면" : edgeCount >= 1 ? "1면" : "없음",
+      T: Math.floor(Number(r.hMm ?? r.t ?? r.thicknessMm ?? 0)), // 두께는 명목 정수로 통일
+      edge:
+        edgeCount >= 4 ? "4면"
+        : edgeCount >= 3 ? "3면"
+        : edgeCount >= 2 ? "2면"
+        : edgeCount >= 1 ? "1면"
+        : "없음",
       edgeT: Number(r.edgeT ?? r.edgeThickness ?? (edgeCount > 0 ? 1 : 0)),
+      edgeCountSource: typeof r.edgeCountSource === "string" ? r.edgeCountSource : undefined,
+      edgeTSource: typeof r.edgeTSource === "string" ? r.edgeTSource : undefined,
+      hasEdgeFile: typeof r.hasEdgeFile === "boolean" ? r.hasEdgeFile : undefined,
+      sources: Array.isArray(r.sources) ? r.sources.filter((s): s is string => typeof s === "string") : undefined,
       hole1: Number(r.holeCount ?? r.holes ?? 0),
       hole2: Number(r.hole2Count ?? 0),
       extraProcs,
       confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0.7,
       warn: edgeCount === 0 ? "엣지 파일 없음 — 수동 확인" : null,
+      uploadFile, // 미리보기용 원본 파일 참조
     };
   });
 }
@@ -125,15 +181,81 @@ export function UploadModal({ open, onClose, onParsedDone }: Props) {
           const res = await fetch(`${STP_API_URL}/api/parse/pdf`, { method: "POST", body: fd });
           if (!res.ok) throw new Error(`PDF 파싱 실패 (${res.status})`);
           const json = (await res.json()) as { materials?: unknown[] };
-          allRows.push(...buildRows(json.materials ?? [], "pdf", file.name));
+          allRows.push(...buildRows(json.materials ?? [], "pdf", file.name, file));
         } else if (ext === "zip" || ext === "stp") {
-          const fd = new FormData();
-          fd.append("file", file);
-          if (bomEnabled && bomFile) fd.append("bom", bomFile);
-          const res = await fetch(`${STP_API_URL}/api/parse/stp-zip`, { method: "POST", body: fd });
-          if (!res.ok) throw new Error(`STP/ZIP 파싱 실패 (${res.status})`);
-          const json = (await res.json()) as { materials?: unknown[] };
-          allRows.push(...buildRows(json.materials ?? [], ext === "zip" ? "zip" : "stp", file.name));
+          let serverOk = false;
+          let serverErrMsg = "";
+          try {
+            const fd = new FormData();
+            fd.append("file", file);
+            if (bomEnabled && bomFile) fd.append("bom", bomFile);
+            const res = await fetch(`${STP_API_URL}/api/parse/stp-zip`, { method: "POST", body: fd });
+            if (!res.ok) throw new Error(`STP/ZIP 파싱 실패 (${res.status})`);
+            const json = (await res.json()) as { materials?: unknown[] };
+            const rows = buildRows(json.materials ?? [], ext === "zip" ? "zip" : "stp", file.name, file);
+            if (rows.length > 0) {
+              allRows.push(...rows);
+              serverOk = true;
+            }
+          } catch (e) {
+            serverErrMsg = e instanceof Error ? e.message : "STP 파서 서버에 연결할 수 없습니다";
+          }
+
+          // 백엔드 실패/빈응답 → 클라이언트 폴백: ZIP 안의 .stp 파일 목록만 추출해 placeholder 행
+          if (!serverOk && ext === "zip") {
+            const stpEntries = await extractStpEntriesFromZip(file);
+            if (stpEntries.length > 0) {
+              const warn = serverErrMsg
+                ? `STP 파서 서버 오류 — 수동 확인 필요 (${stpEntries.length}개 파일)`
+                : `STP 파서 응답 비어있음 — 수동 확인 필요 (${stpEntries.length}개 파일)`;
+              stpEntries.forEach((entryName, idx) => {
+                allRows.push({
+                  id: `${file.name}-zipfallback-${idx}`,
+                  checked: true,
+                  name: entryName.replace(/\.(stp|step)$/i, ""),
+                  file: entryName,
+                  source: "zip",
+                  W: 0,
+                  D: 0,
+                  T: 0,
+                  edge: "없음",
+                  edgeT: 0,
+                  hole1: 0,
+                  hole2: 0,
+                  extraProcs: [],
+                  confidence: 0.3,
+                  warn,
+                  uploadFile: file,
+                });
+              });
+            } else if (serverErrMsg) {
+              // ZIP 안에 .stp 파일 자체가 없으면 기존처럼 단일 오류 행
+              throw new Error(serverErrMsg);
+            }
+          } else if (!serverOk && ext === "stp") {
+            // 단일 .stp 인 경우 — 빈 placeholder 행 한 줄
+            const warn = serverErrMsg
+              ? `STP 파서 서버 오류 — 수동 확인 필요`
+              : `STP 파서 응답 비어있음 — 수동 확인 필요`;
+            allRows.push({
+              id: `${file.name}-stpfallback-0`,
+              checked: true,
+              name: file.name.replace(/\.(stp|step)$/i, ""),
+              file: file.name,
+              source: "stp",
+              W: 0,
+              D: 0,
+              T: 0,
+              edge: "없음",
+              edgeT: 0,
+              hole1: 0,
+              hole2: 0,
+              extraProcs: [],
+              confidence: 0.3,
+              warn,
+              uploadFile: file,
+            });
+          }
         } else if (ext === "dwg") {
           allRows.push({
             id: `${file.name}-dwg-0`,

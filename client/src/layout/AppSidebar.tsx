@@ -4,8 +4,10 @@ import { useNavigate } from "react-router-dom";
 import { useProject } from "../context/ProjectContext";
 import { useQuoteTabs } from "../context/QuoteTabsContext";
 import { useTree, type TreeNode, type TreeNodeType } from "../context/TreeContext";
-import { newId, ensureEntityByTreeId, cloneEntityToId, deleteEntityById } from "../offline/stores";
+import { newId, ensureEntityByTreeId, cloneEntityToId, deleteEntityById, getMaterial, putProduct, enrichProductComputed } from "../offline/stores";
 import type { ProjectMeta, ProjectTreeGroup } from "../offline/stores";
+import { getMaterialsForItem } from "../context/TreeContext";
+import { getPartTags, calcMaterialAttachmentsCost, calcPartHardwaresCost } from "../offline/partExtras";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -63,7 +65,8 @@ function getPaddingLeft(type: TreeNodeType): number {
 
 export function AppSidebar() {
   // ── Sidebar open/width ──────────────────────────────────────────────────
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // 기본은 닫힌 상태. 사용자가 열기 버튼 누를 때만 열림.
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_W);
   const [resizing, setResizing] = useState(false);
 
@@ -379,7 +382,12 @@ export function AppSidebar() {
       setEditingName("이름 없음");
       setActiveItem(insertAt);
       if (type === "mat") { openEntityTab("material", nodeId); navigate("/material"); }
-      else if (type === "item") { openEntityTab("product", nodeId); navigate("/product"); }
+      // PR2: 단품 클릭 → 활성 세트 한 페이지 뷰 + 카드 anchor 스크롤
+      else if (type === "item") {
+        const setId = findSetIdForNode(treeNodes, nodeId);
+        if (setId) { openEntityTab("set", setId); navigate(`/set#part-card-${nodeId}`); }
+        else { openEntityTab("product", nodeId); navigate(`/parts/${nodeId}`); }
+      }
       else { openEntityTab("set", nodeId); navigate("/set"); }
     }, 0);
   }
@@ -415,8 +423,25 @@ export function AppSidebar() {
     setActiveItem(idx);
     const nid = node.id ?? "";
     if (node.type === "mat") { openEntityTab("material", nid); navigate("/material"); }
-    else if (node.type === "item") { openEntityTab("product", nid); navigate("/product"); }
+    // PR2: 단품 클릭 → 활성 세트 한 페이지 뷰 + 카드 anchor 스크롤
+    else if (node.type === "item") {
+      const setId = findSetIdForNode(treeNodes, nid);
+      if (setId) { openEntityTab("set", setId); navigate(`/set#part-card-${nid}`); }
+      else { openEntityTab("product", nid); navigate(`/parts/${nid}`); }
+    }
     else if (node.type === "set") { openEntityTab("set", nid); navigate("/set"); }
+  }
+
+  // 트리에서 노드 nid 의 가장 가까운 위 set 노드 id 찾기
+  function findSetIdForNode(nodes: TreeNode[], nid: string): string | null {
+    const idx = nodes.findIndex((n) => n.id === nid);
+    if (idx < 0) return null;
+    for (let i = idx - 1; i >= 0; i--) {
+      const n = nodes[i];
+      if (n.type === "set") return n.id ?? null;
+      if (n.type === "divider") return null;
+    }
+    return null;
   }
 
   // ── Copy / Delete ────────────────────────────────────────────────────────
@@ -543,6 +568,8 @@ export function AppSidebar() {
   function renderTreeItems() {
     return treeNodes.map((node, idx) => {
       if (hiddenBomIdxs.has(idx)) return null;
+      // 사이드바에는 세트만 표시 — 단품/자재는 숨김 (세트 한 페이지 뷰에서 관리)
+      if (node.type === "item" || node.type === "mat") return null;
       if (node.type === "divider") {
         return <div key={`div-${idx}`} className="tree-divider" />;
       }

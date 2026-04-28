@@ -2130,12 +2130,13 @@ body {
 .ed-tab.on{color:#1a1a1a;border-bottom-color:#1a1a1a;background:#fff}
 .ed-content{flex:1;overflow-y:auto;padding:24px}
 
-/* Form inputs (editor) */
-.sl{font-size:12px;color:#414141;font-weight:400;margin-bottom:4px}
-.fi{height:auto;border:1px solid #e0e0e0;border-radius:4px;padding:8px 10px;font-size:13px;background:#fff;width:100%;font-family:inherit}
-.fi:focus{outline:none;border-color:#333}
+/* Form inputs (editor) — 토스 스타일 + 데스커 그레이 */
+.sl{font-size:12px;color:#616161;font-weight:400;margin-bottom:6px;letter-spacing:-0.01em}
+.fi{height:36px;border:1px solid #D6D6D6;border-radius:4px;padding:0 12px;font-size:14px;color:#282828;background:#fff;width:100%;font-family:inherit;font-feature-settings:'tnum' 1;letter-spacing:-0.01em;transition:border-color .15s}
+.fi:focus{outline:none;border-color:#282828}
+.fi:disabled,.fi.disabled{background:#F0F0F0;border-color:#F0F0F0;color:#616161;cursor:not-allowed}
 .grid3{display:grid;grid-template-columns:repeat(3,minmax(0,160px));gap:14px;justify-content:start}
-.sec-title{font-size:11px;font-weight:400;color:#969696;letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px;margin-top:20px}
+.sec-title{font-size:11px;font-weight:500;color:#7E7E7E;letter-spacing:.05em;text-transform:uppercase;margin-bottom:12px;margin-top:24px}
 .mb10{margin-bottom:10px}.mb14{margin-bottom:14px}.mb16{margin-bottom:16px}
 .seg{display:flex;border:1px solid #e0e0e0;border-radius:5px;overflow:hidden;height:34px}
 .seg-btn{flex:1;font-size:11px;font-weight:500;color:#888;background:#fff;border:none;cursor:pointer;padding:0 8px;white-space:nowrap;transition:all .1s;font-family:inherit}
@@ -2410,7 +2411,7 @@ body {
 .tip-box::before{content:'';position:absolute;left:-4px;top:8px;border-top:4px solid transparent;border-bottom:4px solid transparent;border-right:4px solid #1a1a1a}
 
 /* Review modal — inline name input */
-.name-inp{border:none;background:transparent;font-size:11px;font-weight:600;color:#333;width:120px;outline:none;font-family:inherit;border-bottom:1px dashed transparent;transition:border-color .1s}
+.name-inp{border:none;background:transparent;font-size:13px;font-weight:600;color:#282828;width:100%;min-width:120px;outline:none;font-family:inherit;border-bottom:1px dashed transparent;transition:border-color .1s}
 .name-inp:hover{border-bottom-color:#ccc}
 .name-inp:focus{border-bottom-color:#1a1a1a;background:#fafafa;border-radius:2px;padding:0 3px}
 .name-inp.changed{color:#d97706;border-bottom-color:#f59e0b}
